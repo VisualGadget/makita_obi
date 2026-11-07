@@ -29,10 +29,10 @@ venv/bin/makita-tool raw cc d7 0e 00 02 --read 3
 
 Get the user's explicit approval for each run. Do not pass `--yes` unless the user approved that exact operation.
 
-- `unlock`: clears a false lockout and backs up the frame first.
+- `unlock`: clears a false lockout and backs up the frame first. It tries the error reset, and writes the frame only if the pack is still locked.
 - `reset-errors`: clears the error register.
 - `led-test`, `--probe-test-mode`: enter test mode briefly.
-- `restore FILE`: writes a backup frame to the same pack. Backups are in `~/.local/state/makita_tool/backups`.
+- `restore FILE`: undoes an unlock on the same pack. It refuses a backup that differs outside the lock fields, so old backups stop working once the cycle count changes. Backups are in `~/.local/state/makita_tool/backups`.
 - `exit-test-mode`: recovers a pack left in test mode, which cannot power tools or charge.
 
 Run `info` and `unlock --dry-run` first and show the user the result. Do not weaken the unlock refusals, clear a dead failure code, or edit the cycle count: a lockout can be real protection, and the cycle count is the pack's true history.

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 FRAME_LENGTH = 32
 ROM_LENGTH = 8
+UNLOCK_NYBBLES = (34, 41, 42, 43)
 FAILURE_NAMES = {0x0: 'OK', 0x1: 'Overloaded', 0x5: 'Warning', 0xF: 'Dead'}
 MODEL_BY_CAPACITY = {
     15: 'BL1815N',
@@ -180,6 +181,20 @@ class Frame:
         set_nybble(data=data, index=43, value=checksum(data=data, first=32, last=40))
 
         return Frame(data=bytes(data))
+
+
+def changed_nybbles(first: Frame, second: Frame) -> list[int]:
+    """List the nybbles that differ between two frames.
+
+    :param first: First frame.
+    :param second: Second frame.
+    :return: Indexes of the nybbles that differ.
+    """
+    return [
+        index
+        for index in range(FRAME_LENGTH * 2)
+        if get_nybble(data=first.data, index=index) != get_nybble(data=second.data, index=index)
+    ]
 
 
 def manufacture_date(rom: bytes) -> str:

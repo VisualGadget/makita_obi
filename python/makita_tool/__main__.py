@@ -134,11 +134,9 @@ def run_unlock(battery: Battery, args: argparse.Namespace) -> None:
         raise BatteryError('unlock refused: ' + '; '.join(blockers))
 
     print(f'Current frame: {frame.data.hex(" ").upper()}')
+    print(f'The error register is cleared first, failure code: {frame.failure_name}.')
     if target is not None:
-        print(f'New frame:     {target.data.hex(" ").upper()}')
-
-    if clear_errors:
-        print(f'The error register will be cleared, failure code: {frame.failure_name}.')
+        print(f'If still locked: {target.data.hex(" ").upper()}')
 
     if args.dry_run:
         print('Dry run: nothing was written.')
@@ -218,10 +216,12 @@ def dispatch(link: Link, args: argparse.Namespace) -> None:
         run_raw(link=link, args=args)
     elif args.command == 'led-test':
         confirm(message='The pack enters test mode for a few seconds.', assume_yes=args.yes)
-        battery.led_test(seconds=args.seconds)
+        print(f'LED command replies: {battery.led_test(seconds=args.seconds).hex(" ").upper()}')
     elif args.command == 'reset-errors':
         confirm(message='This clears the error register of the battery.', assume_yes=args.yes)
         battery.reset_errors()
+        with link.session():
+            print_result(frame=battery.read_frame()[1])
     elif args.command == 'unlock':
         run_unlock(battery=battery, args=args)
     elif args.command == 'restore':

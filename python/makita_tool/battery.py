@@ -13,9 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from makita_tool.frame import FRAME_LENGTH, ROM_LENGTH, Frame, manufacture_date
+from makita_tool.frame import FRAME_LENGTH, ROM_LENGTH, UNLOCK_NYBBLES, Frame, changed_nybbles, manufacture_date
 
 ACK = 0x06
+ACK_REPLY = bytes([ACK])
 EXTENDED_READ_LENGTH = 29
 MIN_UNLOCK_CELL_V = 3.0
 MAX_UNLOCK_IMBALANCE_V = 0.3
@@ -44,14 +45,6 @@ class Transport(Protocol):
         :return: Reply bytes.
         """
 
-    def rom(self, data: bytes, reply_length: int = 0) -> bytes:
-        """Run a read ROM transaction.
-
-        :param data: Bytes written after the ROM id.
-        :param reply_length: Number of bytes read after the ROM id.
-        :return: Bytes read after the ROM id.
-        """
-
     def raw(self, data: bytes, reply_length: int = 0) -> bytes:
         """Run a transaction without a ROM command.
 
@@ -75,6 +68,10 @@ class Transport(Protocol):
 
 class BatteryError(Exception):
     """The battery did not answer, or an operation is not safe."""
+
+
+class ModeEntryError(BatteryError):
+    """The battery did not accept test mode."""
 
 
 @dataclass
@@ -204,9 +201,13 @@ class Battery:
             return 3
 
         if probe_test_mode:
-            with self.test_mode():
-                if self._acked(command=b'\xdc\x0a', reply_length=17) is not None:
-                    return 2
+            try:
+                with self.test_mode():
+                    if self._acked(command=b'\xdc\x0a', reply_length=17) is not None:
+                        return 2
+
+            except ModeEntryError:
+                return None
 
         return None
 
@@ -361,7 +362,10 @@ class Battery:
     @contextmanager
     def test_mode(self) -> Iterator[None]:
         """Keep the pack in test mode for a block: it cannot power tools or charge while there."""
-        self._link.skip(data=bytes.fromhex('d996a5'), reply_length=1)
+        if self._link.skip(data=bytes.fromhex('d996a5'), reply_length=1) != ACK_REPLY:
+            self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1)
+            raise ModeEntryError('the battery did not accept test mode, nothing was changed')
+
         time.sleep(STEP_WAIT_S)
         try:
             yield
@@ -370,35 +374,70 @@ class Battery:
 
     def exit_test_mode(self) -> None:
         """Leave test mode."""
-        self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1)
+        if self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1) != ACK_REPLY:
+            raise BatteryError('no acknowledge when leaving test mode: run exit-test-mode, then check the pack')
+
         time.sleep(STEP_WAIT_S)
 
-    def led_test(self, seconds: float) -> None:
+    def _rom_step(self, rom: bytes, data: bytes, reply_length: int = 0) -> bytes:
+        """Run a read ROM transaction and check that the same battery answered.
+
+        :param rom: Expected ROM id.
+        :param data: Bytes written after the ROM id.
+        :param reply_length: Number of bytes read after the ROM id.
+        :return: Bytes read after the ROM id.
+        """
+        reply = self._link.query(command=0x33, data=data, reply_length=ROM_LENGTH + reply_length)
+        if reply[:ROM_LENGTH] != rom:
+            raise BatteryError(f'ROM id changed during {data[:2].hex(" ")}: {reply[:ROM_LENGTH].hex(" ")}')
+
+        return reply[ROM_LENGTH:]
+
+    def led_test(self, seconds: float) -> bytes:
         """Light all battery LEDs for a while.
 
         :param seconds: Time the LEDs stay on.
+        :return: Reply bytes of the on and off commands.
         """
-        with self._link.session(), self.test_mode():
-            self._link.rom(data=b'\xda\x31', reply_length=1)
-            time.sleep(seconds)
-            self._link.rom(data=b'\xda\x34', reply_length=1)
+        with self._link.session():
+            rom = self.read_frame()[0]
+            with self.test_mode():
+                replies = self._rom_step(rom=rom, data=b'\xda\x31', reply_length=1)
+                time.sleep(seconds)
+                replies += self._rom_step(rom=rom, data=b'\xda\x34', reply_length=1)
+
+        return replies
 
     def reset_errors(self) -> None:
-        """Clear the error register of the battery."""
-        with self._link.session(), self.test_mode():
-            self._link.rom(data=b'\xda\x04', reply_length=1)
+        """Clear the error register of the battery, then power cycle it so the change is kept.
 
-    def _write_frame(self, frame: Frame) -> None:
-        """Write a frame to the battery and commit it.
+        The reply byte is not checked: its meaning is not documented, and DA commands answered 07
+        on a real BL1850.
+        """
+        with self._link.session():
+            rom = self.read_frame()[0]
+            with self.test_mode():
+                self._rom_step(rom=rom, data=b'\xda\x04', reply_length=1)
 
+        time.sleep(COMMIT_WAIT_S)
+
+    def _write_frame(self, rom: bytes, frame: Frame) -> None:
+        """Write a frame to the battery, then power cycle it so the frame is committed.
+
+        The write and store commands have no reply, so the arm reply and the ROM id are the only
+        checks available. A failed check stops before the store command.
+
+        :param rom: ROM id of the battery.
         :param frame: Frame to write.
         """
         with self._link.session(), self.test_mode():
-            self._link.skip(data=b'\xf0\x00')
+            if is_blank(self._link.skip(data=b'\xf0\x00', reply_length=FRAME_LENGTH)):
+                raise BatteryError('the battery refused to arm: it arms once per insertion, so reinsert it and retry')
+
             time.sleep(STEP_WAIT_S)
-            self._link.rom(data=b'\x0f\x00' + frame.data)
+            self._rom_step(rom=rom, data=b'\x0f\x00' + frame.data)
             time.sleep(STEP_WAIT_S)
-            self._link.rom(data=b'\x55\xa5')
+            self._rom_step(rom=rom, data=b'\x55\xa5')
             time.sleep(STEP_WAIT_S)
 
         time.sleep(COMMIT_WAIT_S)
@@ -455,8 +494,19 @@ class Battery:
 
         return rom, frame, target, clear_errors, blockers
 
+    def _read_back(self) -> Frame:
+        """Read the frame in a new session.
+
+        :return: Frame read from the battery.
+        """
+        with self._link.session():
+            return self.read_frame()[1]
+
     def unlock(self, probe_test_mode: bool = False) -> Frame:
         """Clear a false lockout, after backing up the frame.
+
+        The error reset runs first, because it needs no frame write. The frame is only written
+        when the pack is still locked, and it is built from a fresh read, as the reset can change it.
 
         :param probe_test_mode: Allow a short visit to test mode to identify the controller.
         :return: Frame read back from the battery.
@@ -468,33 +518,59 @@ class Battery:
         if target is None and not clear_errors:
             return frame
 
-        backup_frame(rom=rom, frame=frame)
-        if clear_errors:
+        backup = backup_frame(rom=rom, frame=frame)
+        self.reset_errors()
+        result = self._read_back()
+        if result.lock_causes:
+            self._write_frame(rom=rom, frame=result.repaired())
             self.reset_errors()
+            result = self._read_back()
 
-        if target is not None:
-            self._write_frame(frame=target)
+        if result.lock_causes:
+            raise BatteryError(f'still locked: {", ".join(result.lock_causes)}. Backup: {backup}')
 
-        with self._link.session():
-            return self.read_frame()[1]
+        return result
 
     def restore(self, path: Path) -> Frame:
-        """Write a frame from a backup file back to the same battery.
+        """Undo an unlock by writing a backup frame back to the same battery.
+
+        Only the fields an unlock changes may differ, so a backup can never rewrite the cycle count,
+        the failure code or other history of the pack.
 
         :param path: Backup file.
         :return: Frame read back from the battery.
         """
-        saved = json.loads(path.read_text())
+        try:
+            saved = json.loads(path.read_text())
+            saved_rom = bytes.fromhex(saved['rom'])
+            target = Frame(data=bytes.fromhex(saved['frame']))
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise BatteryError(f'cannot use backup {path}: {error}') from error
+
         with self._link.session():
             rom, frame = self.read_frame()
+            if rom != saved_rom:
+                raise BatteryError(f'backup belongs to another battery: {saved_rom.hex(" ")}')
 
-        if rom.hex() != saved['rom']:
-            raise BatteryError(f'backup belongs to another battery: {saved["rom"]}')
+            changed = set(changed_nybbles(first=frame, second=target)) - set(UNLOCK_NYBBLES)
+            if changed:
+                raise BatteryError(f'backup differs from the pack beyond the lock fields, nybbles: {sorted(changed)}')
 
-        backup_frame(rom=rom, frame=frame)
-        self._write_frame(frame=Frame(data=bytes.fromhex(saved['frame'])))
-        with self._link.session():
-            return self.read_frame()[1]
+            if frame == target:
+                return frame
+
+            controller_type = self.detect_type(rom=rom, frame=frame, probe_test_mode=True)
+
+        if controller_type not in (0, 2, 3):
+            raise BatteryError(f'restore is not validated for controller type {controller_type}')
+
+        backup = backup_frame(rom=rom, frame=frame)
+        self._write_frame(rom=rom, frame=target)
+        result = self._read_back()
+        if result != target:
+            raise BatteryError(f'read back differs from the backup. Previous frame: {backup}')
+
+        return result
 
 
 def backup_frame(rom: bytes, frame: Frame) -> Path:

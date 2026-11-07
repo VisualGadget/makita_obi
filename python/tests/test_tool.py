@@ -1,5 +1,6 @@
 """Tests for frame decoding and battery operations, using a frame read from a real BL1850 pack."""
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,25 +29,56 @@ def locked_frame() -> bytes:
 class FakeLink:
     """Records transactions and answers like a type 3 battery."""
 
-    def __init__(self, frame: bytes = GOOD, cells: list[float] | None = None) -> None:
+    def __init__(
+        self,
+        frame: bytes = GOOD,
+        cells: list[float] | None = None,
+        after_reset: bytes | None = None,
+    ) -> None:
         """Set the state of the fake battery.
 
         :param frame: Stored frame.
         :param cells: Cell voltages.
+        :param after_reset: Stored frame after the first error reset.
         """
         self.frame = frame
         self.cells = HEALTHY_CELLS if cells is None else cells
+        self.after_reset = after_reset
         self.log: list[bytes] = []
+        self.pending = b''
+        self.written: list[bytes] = []
+        self.refuse_test_mode = False
+        self.refuse_exit = False
+        self.refuse_arm = False
+        self.ignore_store = False
+        self.echo_after_write = ROM
 
     def query(self, command: int, data: bytes = b'', reply_length: int = 0) -> bytes:
-        """Answer the read ROM frame.
+        """Answer a read ROM transaction and apply frame writes.
 
         :param command: Firmware command.
         :param data: Data bytes.
         :param reply_length: Number of reply bytes.
         :return: Reply bytes.
         """
-        return ROM + self.frame
+        if data == b'\xaa\x00':
+            return ROM + self.frame
+
+        self.log.append(data)
+        if data[:2] == b'\x0f\x00':
+            self.pending = data[2:]
+
+            return self.echo_after_write
+
+        if data == b'\x55\xa5' and not self.ignore_store:
+            self.frame = self.pending
+            self.written.append(self.pending)
+
+        if data == b'\xda\x04' and self.after_reset is not None:
+            self.frame = self.after_reset
+            self.after_reset = None
+
+        return ROM + b'\x07' * (reply_length - len(ROM))
 
     def skip(self, data: bytes, reply_length: int = 0) -> bytes:
         """Answer a skip ROM transaction.
@@ -56,6 +88,15 @@ class FakeLink:
         :return: Reply bytes.
         """
         self.log.append(data)
+        if data == bytes.fromhex('d996a5'):
+            return b'\xff' if self.refuse_test_mode else b'\x06'
+
+        if data == bytes.fromhex('d9ffff'):
+            return b'\xff' if self.refuse_test_mode or self.refuse_exit else b'\x06'
+
+        if data == b'\xf0\x00':
+            return b'\xff' * reply_length if self.refuse_arm else self.frame
+
         if data == bytes.fromhex('d42c0002'):
             return b'\x01\x02\x06'
 
@@ -68,19 +109,6 @@ class FakeLink:
             return (3004).to_bytes(2, 'little') + b'\x06'
 
         return b'\xff' * reply_length
-
-    def rom(self, data: bytes, reply_length: int = 0) -> bytes:
-        """Answer a read ROM transaction and apply a frame write.
-
-        :param data: Bytes written.
-        :param reply_length: Number of bytes read.
-        :return: Reply bytes.
-        """
-        self.log.append(data)
-        if data[:2] == b'\x0f\x00':
-            self.frame = data[2:]
-
-        return b'\x06' * reply_length
 
     def raw(self, data: bytes, reply_length: int = 0) -> bytes:
         """Answer a raw transaction.
@@ -153,6 +181,17 @@ def test_unlock_does_nothing_on_healthy_pack() -> None:
     assert all(entry[:1] != b'\x0f' for entry in link.log)
 
 
+def steps(link: FakeLink) -> list[str]:
+    """List the write related commands that were sent.
+
+    :param link: Fake link.
+    :return: First two bytes of each command, in hex.
+    """
+    known = ('d996', 'd9ff', 'da04', 'f000', '0f00', '55a5')
+
+    return [entry[:2].hex() for entry in link.log if entry[:2].hex() in known]
+
+
 def test_unlock_writes_in_order_and_backs_up(tmp_path: Path) -> None:
     """Check the write sequence and the backup.
 
@@ -161,10 +200,132 @@ def test_unlock_writes_in_order_and_backs_up(tmp_path: Path) -> None:
     link = FakeLink(frame=locked_frame())
     result = Battery(link=link).unlock()
     assert result.lock_causes == []
-    sequence = [entry[:2].hex() for entry in link.log]
-    order = [sequence.index(step) for step in ('d996', 'f000', '0f00', '55a5', 'd9ff')]
-    assert order == sorted(order)
+    reset = ['d996', 'da04', 'd9ff']
+    assert steps(link=link) == [*reset, 'd996', 'f000', '0f00', '55a5', 'd9ff', *reset]
     assert len(list(tmp_path.glob('*.json'))) == 1
+
+
+def test_unlock_skips_write_when_reset_is_enough() -> None:
+    """Check that the frame is not written when the error reset clears the lock."""
+    link = FakeLink(frame=locked_frame(), after_reset=GOOD)
+    assert Battery(link=link).unlock().data == GOOD
+    assert '0f00' not in steps(link=link)
+
+
+def test_unlock_builds_frame_from_fresh_read() -> None:
+    """Check that a change made by the error reset is kept in the written frame."""
+    changed = bytearray(locked_frame())
+    changed[30] = 0x11
+    link = FakeLink(frame=locked_frame(), after_reset=bytes(changed))
+    Battery(link=link).unlock()
+    assert link.written[0][30] == 0x11
+
+
+def test_unlock_stops_when_test_mode_is_refused() -> None:
+    """Check that nothing is written when test mode is not acknowledged."""
+    link = FakeLink(frame=locked_frame())
+    link.refuse_test_mode = True
+    with pytest.raises(BatteryError, match='test mode'):
+        Battery(link=link).unlock()
+
+    assert not {'da04', 'f000', '0f00', '55a5'} & set(steps(link=link))
+
+
+def test_unlock_stops_when_arm_is_refused() -> None:
+    """Check that nothing is written when the battery does not arm."""
+    link = FakeLink(frame=locked_frame())
+    link.refuse_arm = True
+    with pytest.raises(BatteryError, match='reinsert'):
+        Battery(link=link).unlock()
+
+    assert '0f00' not in steps(link=link)
+    assert steps(link=link)[-1] == 'd9ff'
+
+
+def test_unlock_skips_store_on_wrong_rom_echo() -> None:
+    """Check that the store command is not sent when another ROM id answers."""
+    link = FakeLink(frame=locked_frame())
+    link.echo_after_write = b'\xff' * 8
+    with pytest.raises(BatteryError, match='ROM id changed'):
+        Battery(link=link).unlock()
+
+    assert '55a5' not in steps(link=link)
+    assert steps(link=link)[-1] == 'd9ff'
+
+
+def test_unlock_reports_pack_that_stays_locked() -> None:
+    """Check that a write the battery did not keep is an error."""
+    link = FakeLink(frame=locked_frame())
+    link.ignore_store = True
+    with pytest.raises(BatteryError, match='still locked'):
+        Battery(link=link).unlock()
+
+
+def test_missing_exit_acknowledge_is_an_error() -> None:
+    """Check that a pack that may still be in test mode is reported."""
+    link = FakeLink()
+    link.refuse_exit = True
+    with pytest.raises(BatteryError, match='exit-test-mode'):
+        Battery(link=link).reset_errors()
+
+
+def write_backup(path: Path, frame: bytes, rom: bytes = ROM) -> Path:
+    """Write a backup file.
+
+    :param path: Folder for the file.
+    :param frame: Frame to store.
+    :param rom: ROM id to store.
+    :return: Backup path.
+    """
+    backup = path / 'saved.backup'
+    backup.write_text(json.dumps({'rom': rom.hex(), 'frame': frame.hex()}))
+
+    return backup
+
+
+def test_restore_undoes_an_unlock(tmp_path: Path) -> None:
+    """Check that a frame differing only in the lock fields is written back.
+
+    :param tmp_path: Temporary folder.
+    """
+    saved = Frame(data=locked_frame()).repaired().data
+    saved = bytes([saved[0], *saved[1:17], saved[17] | 0x01, *saved[18:]])
+    link = FakeLink()
+    assert Battery(link=link).restore(path=write_backup(path=tmp_path, frame=saved)).data == saved
+
+
+def test_restore_refuses_changed_history(tmp_path: Path) -> None:
+    """Check that an old backup cannot rewrite the cycle count.
+
+    :param tmp_path: Temporary folder.
+    """
+    data = bytearray(GOOD)
+    data[27] = 0
+    link = FakeLink()
+    with pytest.raises(BatteryError, match='beyond the lock fields'):
+        Battery(link=link).restore(path=write_backup(path=tmp_path, frame=bytes(data)))
+
+    assert '0f00' not in steps(link=link)
+
+
+def test_restore_refuses_another_battery(tmp_path: Path) -> None:
+    """Check that a backup of another pack is refused.
+
+    :param tmp_path: Temporary folder.
+    """
+    with pytest.raises(BatteryError, match='another battery'):
+        Battery(link=FakeLink()).restore(path=write_backup(path=tmp_path, frame=GOOD, rom=b'\x01' * 8))
+
+
+def test_restore_refuses_broken_file(tmp_path: Path) -> None:
+    """Check that a broken backup gives a clean error.
+
+    :param tmp_path: Temporary folder.
+    """
+    backup = tmp_path / 'broken.backup'
+    backup.write_text('{"rom": "00"}')
+    with pytest.raises(BatteryError, match='cannot use backup'):
+        Battery(link=FakeLink()).restore(path=backup)
 
 
 @pytest.mark.parametrize(

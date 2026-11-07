@@ -52,7 +52,11 @@ Close the OBI web tool first, because only one program can hold the serial port.
 - Writes ask for confirmation, and `unlock` saves the frame to `~/.local/state/makita_tool/backups` first.
 - `unlock` clears a false lockout on a healthy pack. It refuses a pack that reports itself dead, has a cell failure
   flag, has a cell below 3.0 V, has more than 0.3 V imbalance, is above 60 °C, or has an unknown controller type.
+- `unlock` tries the error reset first and only writes the frame if the pack is still locked.
 - `unlock` never clears the dead failure code or changes history such as the cycle count.
+- `restore` only undoes an unlock: it refuses a backup that differs from the pack outside the lock fields.
+- A write stops if test mode is refused, the pack does not arm, or the ROM id changes. The pack arms once per
+  insertion, so reinsert it before retrying.
 - A pack in test mode cannot power tools or charge. The tool always leaves test mode, and `exit-test-mode` recovers it.
 - Lithium-ion packs can be dangerous. A lockout is often real protection, so do not charge a pack you do not trust.
 
