@@ -14,6 +14,7 @@ from makita_tool.frame import Frame
 from makita_tool.link import Link, LinkError
 
 PROBE_HELP = 'identify the controller with a short visit to test mode'
+EMULATED_WARNING = 'WARNING: no ROM id and no live data. This frame is a fixed reply, not the state of this pack.'
 HISTORY_WARNING = 'This also reset the cycle count and damage rating to 0 on a real BL1850.'
 READ_ONLY_PREFIXES = (b'\xaa\x00', b'\xd4', b'\xd6', b'\xd7', b'\xdc\x0b', b'\xdc\x0c')
 
@@ -38,6 +39,9 @@ def print_report(report: Report) -> None:
 
     :param report: Battery report.
     """
+    if report.emulated:
+        print(EMULATED_WARNING)
+
     model = report.model or 'unknown'
     source = 'reported by the pack' if report.model_reported else 'estimated from capacity'
     lock = 'LOCKED: ' + ', '.join(report.lock_causes) if report.locked else 'unlocked'
@@ -120,7 +124,11 @@ def run_monitor(battery: Battery, args: argparse.Namespace) -> None:
     :param args: Parsed arguments.
     """
     while True:
-        live = battery.report().live
+        report = battery.report()
+        if report.emulated:
+            raise BatteryError('monitor needs live data, and this pack only answers with a fixed frame')
+
+        live = report.live
         cells = ' '.join(f'{voltage:.3f}' for voltage in live.cell_voltages)
         print(f'{time.strftime("%H:%M:%S")} {live.pack_voltage} V  cells {cells}  {live.temperature_c} °C', flush=True)
         time.sleep(args.interval)
@@ -252,6 +260,9 @@ def dispatch(link: Link, args: argparse.Namespace) -> None:
     elif args.command == 'unlock':
         run_unlock(battery=battery, args=args)
     elif args.command == 'restore':
+        with link.session():
+            battery.read_frame()
+
         confirm(message=f'This writes the frame from {args.file} to the battery.', assume_yes=args.yes)
         print_result(frame=battery.restore(path=args.file))
     elif args.command == 'exit-test-mode':

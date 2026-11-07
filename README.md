@@ -53,7 +53,7 @@ Close the OBI web tool first, because only one program can hold the serial port.
 - `unlock` clears a false lockout on a healthy pack. It refuses a pack that reports itself dead, has a cell failure
   flag, has a cell below 3.0 V, has more than 0.3 V imbalance, is above 60 °C, or has an unknown controller type.
 - `unlock` tries the error reset first and only writes the frame if the pack is still locked.
-- `unlock` never clears the dead failure code or changes history such as the cycle count.
+- `unlock` never clears the dead failure code or writes a changed cycle count, but its `DA 04` step can reset history, see below.
 - `restore` only undoes an unlock: it refuses a backup that differs from the pack outside the lock fields.
 - A write stops if test mode is refused, the pack does not arm, or the ROM id changes. The pack arms once per
   insertion, so reinsert it before retrying.
@@ -68,9 +68,27 @@ Close the OBI web tool first, because only one program can hold the serial port.
 ## Status
 
 Read commands and entering and leaving test mode are tested on a real 2014 BL1850 that reports no model and has no
-LEDs, so the LED commands ran but their effect was not seen: they replied `07`, not the usual `06`. Frame writes,
+LEDs, so the LED commands ran but their effect was not seen: they replied `07`, not the usual `06`.
 `reset-errors` has been run once, on a real BL1850. `unlock` and `restore` are covered by simulated tests only and have not been run on a real battery. Support for controller types other than this pack is implemented
 from public notes and is untested.
+
+## Packs that only imitate the interface
+
+A non Makita TPCELL "BL1850B" (18 V, 5.0 Ah, 90 Wh, label charging limit 20.75 V) answers `cc aa 00` with a fixed
+frame and nothing else, which may be all a charger needs:
+
+```text
+F1 36 B6 C3 18 58 00 00 94 94 40 21 01 80 02 09 43 D0 8E 1B F0 65 00 00 00 00 00 00 00 00 00 00
+```
+
+- The frame was identical on every read. It claims 5.2 Ah, 0 cycles and failure code OK, and has no lock causes.
+- `33` reads, `d7` voltages, `d4` and the `dc` probes all return `FF`, so this pack reports no ROM id, cell voltages,
+  temperature or cycles.
+- It shares 25 of 32 bytes with a real BL1850, including the first 15, so it may be copied from a genuine pack.
+- A Fluke 87V read 20.74 V at the pack terminals. Only a meter can check such a pack without opening it.
+
+`info` prints this frame with a warning. `monitor`, `led-test`, `reset-errors`, `unlock` and `restore` refuse packs without a ROM id, while `raw` and `exit-test-mode` are not blocked. The frame
+says nothing about the cells, and this test does not show whether the pack has cell protection.
 
 ## Credits
 

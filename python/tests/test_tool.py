@@ -9,13 +9,14 @@ from pathlib import Path
 import pytest
 from makita_tool import __main__ as cli
 from makita_tool import battery as battery_module
-from makita_tool.battery import Battery, BatteryError, LiveData, kelvin_tenths_to_c
+from makita_tool.battery import Battery, BatteryError, LiveData, NoRomIdError, kelvin_tenths_to_c
 from makita_tool.frame import Frame, manufacture_date, set_nybble
 
 ROM = bytes.fromhex('0E0A0F6708070E24')
 GOOD = bytes.fromhex('F136B6C318580000949440210180024B43D08E1BF06B004302020E32002200B7')
 TYPE5_ROM = bytes.fromhex('1103010252CA0737')
 BL1860B = bytes.fromhex('F126BD131458000094944021D080020BC3D08E6760F3002302020E61004100E5')
+TPCELL = bytes.fromhex('F136B6C318580000949440210180020943D08E1BF0650000000000000000000000')
 HEALTHY_CELLS = [4.11, 4.114, 4.116, 4.109, 4.117]
 
 
@@ -631,3 +632,115 @@ def test_type_five_refusal_comes_before_the_confirmation(
 
     assert capsys.readouterr().out == ''
     assert link.log == []
+
+
+class FixedFrameLink:
+    """Answers like the TPCELL pack: a fixed frame to skip ROM, and blank replies to everything else."""
+
+    def __init__(self, frame: bytes = TPCELL) -> None:
+        """Set the fixed reply.
+
+        :param frame: Frame returned to skip ROM, FF bytes for no pack at all.
+        """
+        self.frame = frame
+        self.log: list[bytes] = []
+
+    def query(self, command: int, data: bytes = b'', reply_length: int = 0) -> bytes:
+        """Answer a firmware frame.
+
+        :param command: Firmware command.
+        :param data: Data bytes.
+        :param reply_length: Number of reply bytes.
+        :return: Blank reply.
+        """
+        if data != b'\xaa\x00':
+            self.log.append(data)
+
+        return b'\xff' * reply_length
+
+    def skip(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Answer a skip ROM transaction.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        if data == b'\xaa\x00':
+            return self.frame[:reply_length]
+
+        self.log.append(data)
+
+        return b'\xff' * reply_length
+
+    def raw(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Answer a raw transaction.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Blank reply.
+        """
+        self.log.append(data)
+
+        return b'\xff' * reply_length
+
+    @contextmanager
+    def session(self) -> Iterator[None]:
+        """Do nothing, the fake pack is always enabled."""
+        yield
+
+
+def test_fixed_frame_pack_is_reported_as_emulated(capsys: pytest.CaptureFixture[str]) -> None:
+    """Check that the frame is shown with a warning and no other command is sent.
+
+    :param capsys: Output capture.
+    """
+    link = FixedFrameLink()
+    report = Battery(link=link).report()
+    assert report.emulated
+    assert report.rom == 'none'
+    assert report.cycle_count == 0
+    assert report.live == LiveData()
+    assert link.log == []
+    cli.print_report(report=report)
+    assert capsys.readouterr().out.startswith('WARNING: no ROM id')
+
+
+def test_blank_bus_is_still_a_wiring_error() -> None:
+    """Check that no reply at all is not mistaken for a fixed frame pack."""
+    with pytest.raises(BatteryError, match='check Enable'):
+        Battery(link=FixedFrameLink(frame=b'\xff' * 32)).report()
+
+
+@pytest.mark.parametrize('command', ['led-test', 'reset-errors', 'restore'])
+def test_fixed_frame_pack_refuses_service_commands(
+    command: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that service commands stop before the prompt and send nothing.
+
+    :param command: Command name.
+    :param capsys: Output capture.
+    :param monkeypatch: Patch helper.
+    """
+    monkeypatch.setattr('builtins.input', lambda _: pytest.fail('the user was asked to confirm'))
+    link = FixedFrameLink()
+    args = Namespace(command=command, seconds=0.0, yes=False, file=Path('backup.json'))
+    with pytest.raises(NoRomIdError):
+        cli.dispatch(link=link, args=args)  # type: ignore[arg-type]
+
+    assert capsys.readouterr().out == ''
+    assert link.log == []
+
+
+def test_fixed_frame_pack_refuses_unlock() -> None:
+    """Check that the unlock plan stops without sending anything."""
+    link = FixedFrameLink()
+    with pytest.raises(NoRomIdError):
+        Battery(link=link).plan_unlock()
+
+    assert link.log == []
+
+
+def test_fixed_frame_pack_refuses_monitor() -> None:
+    """Check that the monitor stops instead of printing empty readings."""
+    with pytest.raises(BatteryError, match='monitor needs live data'):
+        cli.run_monitor(battery=Battery(link=FixedFrameLink()), args=Namespace(interval=0.0))

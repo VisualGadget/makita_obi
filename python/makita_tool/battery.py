@@ -81,6 +81,20 @@ class ModeEntryError(BatteryError):
     """The battery did not accept test mode."""
 
 
+class NoRomIdError(BatteryError):
+    """The pack has no ROM id and only answers with a fixed frame."""
+
+    def __init__(self, frame: Frame) -> None:
+        """Keep the frame the pack answered with.
+
+        :param frame: Frame read with skip ROM.
+        """
+        super().__init__(
+            'no ROM id: this pack only answers with a fixed frame, so it has no live data or service commands'
+        )
+        self.frame = frame
+
+
 @dataclass
 class LiveData:
     """Measurements read from a running battery."""
@@ -122,6 +136,7 @@ class Report:
     charge_level_raw: int | None = None
     overdischarge_percent: int | None = None
     overload_percent: int | None = None
+    emulated: bool = False
 
 
 def kelvin_tenths_to_c(raw: int) -> float:
@@ -155,11 +170,18 @@ class Battery:
     def read_frame(self) -> tuple[bytes, Frame]:
         """Read the ROM id and the basic information frame.
 
+        A non Makita TPCELL pack answers skip ROM with a fixed frame and nothing else, so a blank
+        read is only a wiring fault when that frame is missing too.
+
         :return: ROM id and frame.
         """
         reply = self._link.query(command=0x33, data=b'\xaa\x00', reply_length=ROM_LENGTH + FRAME_LENGTH)
         if is_blank(reply):
-            raise BatteryError('no data from the battery: check Enable, 1-Wire and ground wiring')
+            fixed = self._link.skip(data=b'\xaa\x00', reply_length=FRAME_LENGTH)
+            if is_blank(fixed):
+                raise BatteryError('no data from the battery: check Enable, 1-Wire and ground wiring')
+
+            raise NoRomIdError(frame=Frame(data=fixed))
 
         return reply[:ROM_LENGTH], Frame(data=reply[ROM_LENGTH:])
 
@@ -300,7 +322,12 @@ class Battery:
         :return: Battery report.
         """
         with self._link.session():
-            rom, frame = self.read_frame()
+            try:
+                rom, frame = self.read_frame()
+
+            except NoRomIdError as error:
+                return self._emulated_report(frame=error.frame)
+
             model = self.read_model()
             controller_type = self.detect_type(rom=rom, frame=frame, probe_test_mode=probe_test_mode)
             live = self.read_live(controller_type=controller_type)
@@ -328,6 +355,32 @@ class Battery:
                 self._read_counters(report=report, frame=frame, controller_type=controller_type)
 
         return report
+
+    @staticmethod
+    def _emulated_report(frame: Frame) -> Report:
+        """Describe a pack that only answers with a fixed frame.
+
+        :param frame: Frame read with skip ROM.
+        :return: Battery report.
+        """
+        return Report(
+            rom='none',
+            frame=frame.data.hex(' ').upper(),
+            manufactured='unknown',
+            model=frame.likely_model,
+            model_reported=False,
+            controller_type=None,
+            cell_count=frame.cell_count,
+            capacity_ah=frame.capacity / 10,
+            cycle_count=frame.cycle_count,
+            locked=bool(frame.lock_causes),
+            lock_causes=frame.lock_causes,
+            failure=frame.failure_name,
+            cell_failure=frame.cell_failure,
+            damage_rating=frame.damage_rating,
+            live=LiveData(),
+            emulated=True,
+        )
 
     def _read_counters(self, report: Report, frame: Frame, controller_type: int | None) -> None:
         """Add health and event counters to a report.
