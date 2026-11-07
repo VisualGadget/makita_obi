@@ -54,6 +54,7 @@ class FakeLink:
         self.written: list[bytes] = []
         self.refuse_test_mode = False
         self.refuse_exit = False
+        self.stuck_in_test_mode = False
         self.refuse_arm = False
         self.ignore_store = False
         self.echo_after_write = ROM
@@ -101,6 +102,9 @@ class FakeLink:
 
         if data == b'\xf0\x00':
             return b'\xff' * reply_length if self.refuse_arm else self.frame
+
+        if data == bytes.fromhex('d6040502'):
+            return (b'\x01\x02' if self.stuck_in_test_mode else b'\xff\xff')[:reply_length]
 
         if data == bytes.fromhex('d42c0002'):
             return b'\x01\x02\x06'
@@ -800,3 +804,58 @@ def test_streaming_pack_refuses_unlock() -> None:
         Battery(link=link).plan_unlock()
 
     assert link.log == []
+
+
+CLEARED = bytes.fromhex('F136B6C318580000949440210180020843D08E1BF064000102020E0000000021')
+
+
+def test_restore_can_put_back_own_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check that a cleared pack gets its history back only with the explicit option.
+
+    :param tmp_path: Temporary folder.
+    :param monkeypatch: Patch helper.
+    """
+    monkeypatch.setattr(battery_module, 'BACKUP_DIR', tmp_path / 'backups')
+    backup = write_backup(path=tmp_path, frame=GOOD)
+    link = FakeLink(frame=CLEARED)
+    with pytest.raises(BatteryError, match='beyond the lock fields'):
+        Battery(link=link).restore(path=backup)
+
+    assert link.written == []
+    assert Battery(link=link).restore(path=backup, allow_history=True).data == GOOD
+    saved = json.loads(next((tmp_path / 'backups').glob('*.json')).read_text())
+    assert bytes.fromhex(saved['frame']) == CLEARED
+
+
+def test_restore_history_refuses_a_locked_backup(tmp_path: Path) -> None:
+    """Check that an invalid backup is never written.
+
+    :param tmp_path: Temporary folder.
+    """
+    link = FakeLink(frame=CLEARED)
+    with pytest.raises(BatteryError, match='valid backup'):
+        Battery(link=link).restore(path=write_backup(path=tmp_path, frame=locked_frame()), allow_history=True)
+
+    assert link.written == []
+
+
+def test_write_survives_a_missing_exit_acknowledge(tmp_path: Path) -> None:
+    """Check that the read back decides, as a real BL1850 gave no acknowledge after the store.
+
+    :param tmp_path: Temporary folder.
+    """
+    link = FakeLink(frame=CLEARED)
+    link.refuse_exit = True
+    assert Battery(link=link).restore(path=write_backup(path=tmp_path, frame=GOOD), allow_history=True).data == GOOD
+
+
+def test_write_reports_a_pack_left_in_test_mode(tmp_path: Path) -> None:
+    """Check that a pack still in test mode after a write is reported.
+
+    :param tmp_path: Temporary folder.
+    """
+    link = FakeLink(frame=CLEARED)
+    link.refuse_exit = True
+    link.stuck_in_test_mode = True
+    with pytest.raises(BatteryError, match='still in test mode'):
+        Battery(link=link).restore(path=write_backup(path=tmp_path, frame=GOOD), allow_history=True)

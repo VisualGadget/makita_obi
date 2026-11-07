@@ -451,8 +451,11 @@ class Battery:
         return first + second + third
 
     @contextmanager
-    def test_mode(self) -> Iterator[None]:
-        """Keep the pack in test mode for a block: it cannot power tools or charge while there."""
+    def test_mode(self, require_exit_ack: bool = True) -> Iterator[None]:
+        """Keep the pack in test mode for a block: it cannot power tools or charge while there.
+
+        :param require_exit_ack: Treat a missing acknowledge on leaving as an error.
+        """
         if self._link.skip(data=bytes.fromhex('d996a5'), reply_length=1) != ACK_REPLY:
             self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1)
             raise ModeEntryError('the battery did not accept test mode, nothing was changed')
@@ -461,11 +464,14 @@ class Battery:
         try:
             yield
         finally:
-            self.exit_test_mode()
+            self.exit_test_mode(require_ack=require_exit_ack)
 
-    def exit_test_mode(self) -> None:
-        """Leave test mode."""
-        if self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1) != ACK_REPLY:
+    def exit_test_mode(self, require_ack: bool = True) -> None:
+        """Leave test mode.
+
+        :param require_ack: Treat a missing acknowledge as an error.
+        """
+        if self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1) != ACK_REPLY and require_ack:
             raise BatteryError('no acknowledge when leaving test mode: run exit-test-mode, then check the pack')
 
         time.sleep(STEP_WAIT_S)
@@ -539,12 +545,14 @@ class Battery:
         """Write a frame to the battery, then power cycle it so the frame is committed.
 
         The write and store commands have no reply, so the arm reply and the ROM id are the only
-        checks available. A failed check stops before the store command.
+        checks available. A failed check stops before the store command. A real BL1850 did not
+        acknowledge the exit after a successful store, so a D6 read checks that test mode ended:
+        it only answers in test mode on type 2, and other types are untested.
 
         :param rom: ROM id of the battery.
         :param frame: Frame to write.
         """
-        with self._link.session(), self.test_mode():
+        with self._link.session(), self.test_mode(require_exit_ack=False):
             if is_blank(self._link.skip(data=b'\xf0\x00', reply_length=FRAME_LENGTH)):
                 raise BatteryError('the battery refused to arm: it arms once per insertion, so reinsert it and retry')
 
@@ -555,6 +563,9 @@ class Battery:
             time.sleep(STEP_WAIT_S)
 
         time.sleep(COMMIT_WAIT_S)
+        with self._link.session():
+            if not is_blank(self._link.skip(data=HEALTH_COMMANDS[2], reply_length=2)):
+                raise BatteryError('the pack is still in test mode after the write: run exit-test-mode, then check it')
 
     def unlock_blockers(self, frame: Frame, controller_type: int | None, live: LiveData) -> list[str]:
         """List the reasons an unlock must not run.
@@ -645,13 +656,15 @@ class Battery:
 
         return result
 
-    def restore(self, path: Path) -> Frame:
-        """Undo an unlock by writing a backup frame back to the same battery.
+    def restore(self, path: Path, allow_history: bool = False) -> Frame:
+        """Write a backup frame back to the same battery.
 
-        Only the fields an unlock changes may differ, so a backup can never rewrite the cycle count,
-        the failure code or other history of the pack.
+        By default only the fields an unlock changes may differ, so a backup can not rewrite the
+        cycle count, the failure code or other history of the pack. With allow_history a pack can
+        get its own history back, for example after DA 04 cleared it, from a valid backup only.
 
         :param path: Backup file.
+        :param allow_history: Allow the backup to change history fields.
         :return: Frame read back from the battery.
         """
         try:
@@ -667,8 +680,11 @@ class Battery:
                 raise BatteryError(f'backup belongs to another battery: {saved_rom.hex(" ")}')
 
             changed = set(changed_nybbles(first=frame, second=target)) - set(UNLOCK_NYBBLES)
-            if changed:
+            if changed and not allow_history:
                 raise BatteryError(f'backup differs from the pack beyond the lock fields, nybbles: {sorted(changed)}')
+
+            if allow_history and (target.lock_causes or target.failure_code or frame.failure_code == 0xF):
+                raise BatteryError('allow-history needs a valid backup with no failure, on a pack that is not dead')
 
             if frame == target:
                 return frame

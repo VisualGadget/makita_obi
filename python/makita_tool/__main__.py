@@ -227,6 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     restore = commands.add_parser('restore', help='write a backup frame back to the same battery')
     restore.add_argument('file', type=Path, help='backup file')
+    restore.add_argument(
+        '--allow-history', action='store_true', help="put back this pack's own history, such as cycles"
+    )
     restore.add_argument('--yes', action='store_true', help='do not ask for confirmation')
 
     commands.add_parser('exit-test-mode', help='recover a pack left in test mode')
@@ -264,7 +267,7 @@ def dispatch(link: Link, args: argparse.Namespace) -> None:
             battery.read_frame()
 
         confirm(message=f'This writes the frame from {args.file} to the battery.', assume_yes=args.yes)
-        print_result(frame=battery.restore(path=args.file))
+        print_result(frame=battery.restore(path=args.file, allow_history=args.allow_history))
     elif args.command == 'exit-test-mode':
         with link.session():
             battery.exit_test_mode()

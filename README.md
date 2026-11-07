@@ -55,6 +55,7 @@ Close the OBI web tool first, because only one program can hold the serial port.
 - `unlock` tries the error reset first and only writes the frame if the pack is still locked.
 - `unlock` never clears the dead failure code or writes a changed cycle count, but its `DA 04` step can reset history, see below.
 - `restore` only undoes an unlock: it refuses a backup that differs from the pack outside the lock fields.
+  `--allow-history` lifts that for a valid backup of the same pack, to put back its own history.
 - A write stops if test mode is refused, the pack does not arm, or the ROM id changes. The pack arms once per
   insertion, so reinsert it before retrying.
 - Public notes say a pack in test mode cannot power tools or charge. The tool always leaves test mode, and on the
@@ -69,7 +70,7 @@ Close the OBI web tool first, because only one program can hold the serial port.
 
 Read commands and entering and leaving test mode are tested on a real 2014 BL1850 that reports no model and has no
 LEDs, so the LED commands ran but their effect was not seen: they replied `07`, not the usual `06`.
-`reset-errors` has been run once, on a real BL1850. `unlock` and `restore` are covered by simulated tests only and have not been run on a real battery. Support for controller types other than this pack is implemented
+`reset-errors` has been run once, on a real BL1850. `restore --allow-history` has written a frame once on the same pack: the frame read back exact and survived reinsertion, and the pack did not acknowledge the exit from test mode after the store. `unlock` is covered by simulated tests only and has not been run on a real battery. Support for controller types other than this pack is implemented
 from public notes and is untested.
 
 ## Packs that only imitate the interface

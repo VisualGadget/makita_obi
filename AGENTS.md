@@ -11,7 +11,7 @@ Agent skills live in `.agents/skills/`. If your tool does not load them, read th
 ## Battery safety
 
 - Reads are safe. Anything that enters test mode or writes needs the user's approval for each run.
-- Do not weaken the unlock refusals, clear a dead failure code, or edit the cycle count.
+- Do not weaken the unlock refusals, clear a dead failure code, or edit the cycle count. The one exception is putting back a pack's own history with `restore --allow-history`, when the user asks for it.
 
 ## Checks
 
