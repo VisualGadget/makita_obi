@@ -10,6 +10,8 @@ which frame writes need.
 
 See [docs/wiring.svg](docs/wiring.svg).
 
+![Whole adapter: D1 mini, battery connector, and the copper GND tab on its own wire](docs/hardware-overview.jpg)
+
 ![Finished adapter: D1 mini wired to the battery connector, with a thick copper foil tab that fits the battery GND slot](docs/hardware.jpg)
 
 | Battery | D1 mini | Note |
