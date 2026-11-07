@@ -10,11 +10,13 @@ which frame writes need.
 
 See [docs/wiring.svg](docs/wiring.svg).
 
+![Finished adapter: D1 mini wired to the battery connector, with a thick copper foil tab that fits the battery GND slot](docs/hardware.jpg)
+
 | Battery | D1 mini | Note |
 |---|---|---|
 | Connector position 6, Enable | D6 (GPIO12) | 4.7 kΩ pull-up to 3V3 |
 | Connector position 2, 1-Wire | D7 (GPIO13) | 4.7 kΩ pull-up to 3V3 |
-| Main `−` terminal | GND | Shared ground |
+| Main `−` terminal | GND | Shared ground, a thick copper foil tab fits the slot |
 
 Position 1 of the yellow connector is the end closest to the negative battery terminal. Never pull these lines up
 to 5 V and never connect the main `+` terminal to the D1 mini.
