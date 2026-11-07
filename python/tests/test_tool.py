@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from makita_tool import __main__ as cli
 from makita_tool import battery as battery_module
-from makita_tool.battery import Battery, BatteryError, LiveData, NoRomIdError, kelvin_tenths_to_c
+from makita_tool.battery import Battery, BatteryError, LiveData, NoRomIdError, StreamingPackError, kelvin_tenths_to_c
 from makita_tool.frame import Frame, manufacture_date, set_nybble
 
 ROM = bytes.fromhex('0E0A0F6708070E24')
@@ -744,3 +744,59 @@ def test_fixed_frame_pack_refuses_monitor() -> None:
     """Check that the monitor stops instead of printing empty readings."""
     with pytest.raises(BatteryError, match='monitor needs live data'):
         cli.run_monitor(battery=Battery(link=FixedFrameLink()), args=Namespace(interval=0.0))
+
+
+class StreamingLink(FixedFrameLink):
+    """Answers like the fake BL2110B: one burst after Enable, then blank replies."""
+
+    def __init__(self) -> None:
+        """Start with the burst ready."""
+        super().__init__(frame=b'\xff' * 32)
+        self.burst = bytes.fromhex('FFFFF126BD131458') + BL1860B
+
+    def query(self, command: int, data: bytes = b'', reply_length: int = 0) -> bytes:
+        """Answer with the burst once.
+
+        :param command: Firmware command.
+        :param data: Data bytes.
+        :param reply_length: Number of reply bytes.
+        :return: Burst, then blank replies.
+        """
+        burst, self.burst = self.burst, b''
+
+        return burst or super().query(command=command, data=data, reply_length=reply_length)
+
+
+def test_streaming_pack_is_not_decoded() -> None:
+    """Check that a burst is not reported as a battery."""
+    with pytest.raises(StreamingPackError):
+        Battery(link=StreamingLink()).report()
+
+
+@pytest.mark.parametrize('command', ['led-test', 'reset-errors', 'restore'])
+def test_streaming_pack_refuses_service_commands(
+    command: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that service commands stop before the prompt and send nothing.
+
+    :param command: Command name.
+    :param capsys: Output capture.
+    :param monkeypatch: Patch helper.
+    """
+    monkeypatch.setattr('builtins.input', lambda _: pytest.fail('the user was asked to confirm'))
+    link = StreamingLink()
+    args = Namespace(command=command, seconds=0.0, yes=False, file=Path('backup.json'))
+    with pytest.raises(StreamingPackError):
+        cli.dispatch(link=link, args=args)  # type: ignore[arg-type]
+
+    assert capsys.readouterr().out == ''
+    assert link.log == []
+
+
+def test_streaming_pack_refuses_unlock() -> None:
+    """Check that the false lock of a misread burst cannot reach a write."""
+    link = StreamingLink()
+    with pytest.raises(StreamingPackError):
+        Battery(link=link).plan_unlock()
+
+    assert link.log == []

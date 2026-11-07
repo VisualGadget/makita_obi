@@ -95,6 +95,17 @@ class NoRomIdError(BatteryError):
         self.frame = frame
 
 
+class StreamingPackError(BatteryError):
+    """The pack sends one unreliable burst after Enable and ignores commands."""
+
+    def __init__(self) -> None:
+        """Set the message."""
+        super().__init__(
+            'not a readable pack: two reads differ, so it has no ROM id and nothing it sends can be decoded. '
+            'A third party pack that streams one burst after Enable behaves like this. Check it with a meter'
+        )
+
+
 @dataclass
 class LiveData:
     """Measurements read from a running battery."""
@@ -171,7 +182,8 @@ class Battery:
         """Read the ROM id and the basic information frame.
 
         A non Makita TPCELL pack answers skip ROM with a fixed frame and nothing else, so a blank
-        read is only a wiring fault when that frame is missing too.
+        read is only a wiring fault when that frame is missing too. Another fake sends one burst
+        after Enable whatever it is asked, so a second read has to match the first.
 
         :return: ROM id and frame.
         """
@@ -182,6 +194,9 @@ class Battery:
                 raise BatteryError('no data from the battery: check Enable, 1-Wire and ground wiring')
 
             raise NoRomIdError(frame=Frame(data=fixed))
+
+        if self._link.query(command=0x33, data=b'\xaa\x00', reply_length=ROM_LENGTH + FRAME_LENGTH) != reply:
+            raise StreamingPackError
 
         return reply[:ROM_LENGTH], Frame(data=reply[ROM_LENGTH:])
 

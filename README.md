@@ -90,6 +90,27 @@ F1 36 B6 C3 18 58 00 00 94 94 40 21 01 80 02 09 43 D0 8E 1B F0 65 00 00 00 00 00
 `info` prints this frame with a warning. `monitor`, `led-test`, `reset-errors`, `unlock` and `restore` refuse packs without a ROM id, while `raw` and `exit-test-mode` are not blocked. The frame
 says nothing about the cells, and this test does not show whether the pack has cell protection.
 
+A second fake carries Makita labels: "BL2110B", 21 V, 10.0 Ah, 210 Wh, cell code `5INR19/66-2`, with a charge
+indicator. It has 21700 cells inside and about the labelled capacity, so the cell code on the case is false. It behaves
+differently from the TPCELL:
+
+- After each Enable it sends one burst, even with no command at all, and every later read is blank. It has no ROM id,
+  cell voltages, temperature or model.
+- Its timing drifts against the reader, adding 24 to 31 extra bits per burst, so no two captures look the same.
+- The frame below was rebuilt offline. It fits 12 of 16 captures bit by bit, the other 4 used `33 aa 00`, which
+  writes during the burst, and its checksums pass:
+
+```text
+F1 26 BD 13 14 58 00 00 94 94 40 21 D0 80 02 08 C3 D0 8E 67 60 F0 00 01 02 02 0E 00 00 00 00 21
+```
+
+- It claims a 6.0 Ah BL1860B with 0 cycles and failure code OK. It differs from a real BL1860B only at bytes 15, 21,
+  23, 27, 29 and 31, the bytes `DA 04` changed on a real BL1850, so it may be a genuine frame with its history cleared.
+- A Fluke 87V read 18.03 V when about half charged.
+
+`read_frame` reads twice, and a second read that differs stops every command that reads the frame, including `info`.
+The tool does not rebuild this frame itself.
+
 ## Credits
 
 Protocol facts come from [makita-lxt-protocol](https://github.com/rosvall/makita-lxt-protocol) by rosvall, Open
