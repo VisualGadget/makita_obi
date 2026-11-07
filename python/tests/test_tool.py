@@ -414,3 +414,59 @@ def test_type_two_stays_out_of_test_mode_without_probe() -> None:
     report = Battery(link=link).report()
     assert report.controller_type is None
     assert all(entry[:1] != b'\xd9' for entry in link.log)
+
+
+class TypeFiveLink(FakeLink):
+    """Answers like a real F0513 pack, including the scrambled replies after F0 00."""
+
+    def __init__(self) -> None:
+        """Start with clean replies."""
+        super().__init__()
+        self.scrambled = False
+
+    def query(self, command: int, data: bytes = b'', reply_length: int = 0) -> bytes:
+        """Answer with a ROM id that marks a type 5 pack.
+
+        :param command: Firmware command.
+        :param data: Data bytes.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        return bytes.fromhex('1103010252CA0737') + self.frame
+
+    def skip(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Answer a skip ROM transaction.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        self.log.append(data)
+        if data == b'\xf0\x00':
+            self.scrambled = True
+
+            return b''
+
+        if self.scrambled:
+            return b'\xb0\x28'
+
+        replies = {0x31: '2b10', 0x32: '2910', 0x33: '2810', 0x34: '2910', 0x35: '2910', 0x52: 'b50b'}
+
+        return bytes.fromhex(replies[data[0]]) if data[0] in replies else b'\xff' * reply_length
+
+
+def test_type_five_read_sends_no_clear() -> None:
+    """Check the raw replies of a real BL1860B and that the state changing clear is not sent."""
+    link = TypeFiveLink()
+    report = Battery(link=link).report()
+    assert report.controller_type == 5
+    assert report.live.cell_voltages == [4.139, 4.137, 4.136, 4.137, 4.137]
+    assert report.live.temperature_c == 26.55
+    assert b'\xf0\x00' not in link.log
+
+
+def test_type_five_rejects_implausible_cells() -> None:
+    """Check that scrambled replies are not shown as measurements."""
+    link = TypeFiveLink()
+    link.scrambled = True
+    assert Battery(link=link).report().live.cell_voltages == []

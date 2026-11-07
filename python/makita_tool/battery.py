@@ -18,6 +18,7 @@ from makita_tool.frame import FRAME_LENGTH, ROM_LENGTH, UNLOCK_NYBBLES, Frame, c
 ACK = 0x06
 ACK_REPLY = bytes([ACK])
 EXTENDED_READ_LENGTH = 29
+MAX_CELL_V = 5.0
 MIN_UNLOCK_CELL_V = 3.0
 MAX_UNLOCK_IMBALANCE_V = 0.3
 MAX_UNLOCK_TEMPERATURE_C = 60.0
@@ -243,13 +244,17 @@ class Battery:
     def _read_live_type5(self) -> LiveData:
         """Read measurements from an F0513 based pack.
 
-        :return: Measurements.
+        Sending the F0 00 clear first scrambled these replies on a real BL1860B, and it also changes
+        the state of the pack, so it is not used here.
+
+        :return: Measurements, empty when the replies are not plausible.
         """
-        self._link.skip(data=b'\xf0\x00')
-        self._link.skip(data=b'\xf0\x00')
         cells = []
         for command in (0x31, 0x32, 0x33, 0x34, 0x35):
             cells.append(int.from_bytes(self._link.skip(data=bytes([command]), reply_length=2), 'little') / 1000)
+
+        if max(cells) > MAX_CELL_V:
+            return LiveData()
 
         temperature = int.from_bytes(self._link.skip(data=b'\x52', reply_length=2), 'little')
 
@@ -275,8 +280,6 @@ class Battery:
 
     def report(self, probe_test_mode: bool = False) -> Report:
         """Read everything the pack offers without changing it.
-
-        Type 5 reads send the documented F0 00 clear commands first, which only affect session state.
 
         :param probe_test_mode: Allow a short visit to test mode to identify the controller.
         :return: Battery report.
