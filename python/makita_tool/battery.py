@@ -455,6 +455,7 @@ class Battery:
     def reset_errors(self) -> None:
         """Clear the error register of the battery, then power cycle it so the change is kept.
 
+        On a real BL1850 this also reset the cycle count and the damage rating to 0.
         The reply byte is not checked: its meaning is not documented, and DA commands answered 07
         on a real BL1850.
         """

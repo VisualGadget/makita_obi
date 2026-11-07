@@ -14,6 +14,7 @@ from makita_tool.frame import Frame
 from makita_tool.link import Link, LinkError
 
 PROBE_HELP = 'identify the controller with a short visit to test mode'
+HISTORY_WARNING = 'This also reset the cycle count and damage rating to 0 on a real BL1850.'
 READ_ONLY_PREFIXES = (b'\xaa\x00', b'\xd4', b'\xd6', b'\xd7', b'\xdc\x0b', b'\xdc\x0c')
 
 
@@ -158,7 +159,7 @@ def run_unlock(battery: Battery, args: argparse.Namespace) -> None:
         raise BatteryError('unlock refused: ' + '; '.join(blockers))
 
     print(f'Current frame: {frame.data.hex(" ").upper()}')
-    print(f'The error register is cleared first, failure code: {frame.failure_name}.')
+    print(f'The error register is cleared first, failure code: {frame.failure_name}. {HISTORY_WARNING}')
     if target is not None:
         print(f'If still locked: {target.data.hex(" ").upper()}')
 
@@ -208,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     leds.add_argument('--seconds', type=float, default=5.0, help='time the LEDs stay on')
     leds.add_argument('--yes', action='store_true', help='do not ask for confirmation')
 
-    reset = commands.add_parser('reset-errors', help='clear the error register')
+    reset = commands.add_parser('reset-errors', help='clear the error register, also resets the cycle count')
     reset.add_argument('--yes', action='store_true', help='do not ask for confirmation')
 
     unlock = commands.add_parser('unlock', help='clear a false lockout on a healthy pack')
@@ -244,7 +245,7 @@ def dispatch(link: Link, args: argparse.Namespace) -> None:
         print(f'LED command replies: {battery.led_test(seconds=args.seconds).hex(" ").upper()}')
     elif args.command == 'reset-errors':
         battery.check_supported(command=args.command)
-        confirm(message='This clears the error register of the battery.', assume_yes=args.yes)
+        confirm(message=f'This clears the error register of the battery. {HISTORY_WARNING}', assume_yes=args.yes)
         battery.reset_errors()
         with link.session():
             print_result(frame=battery.read_frame()[1])

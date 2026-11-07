@@ -59,6 +59,7 @@ Close the OBI web tool first, because only one program can hold the serial port.
   insertion, so reinsert it before retrying.
 - Public notes say a pack in test mode cannot power tools or charge. The tool always leaves test mode, and on the
   tested BL1850 holding Enable low for 2 s also ended it.
+- `reset-errors` wipes battery history, and `unlock` runs the same `DA 04` step first. On a real BL1850 (type 2) `DA 04` also reset the charge cycle count from 35 to 0 and the damage rating from 1 to 0, and changed frame bytes 15, 21, 23, 27, 29 and 31, even though the failure code was already OK. The change survived a power cycle. The pack stayed unlocked. Whether other counters are cleared is unknown.
 - F0513 (type 5) packs are read only. They have no LED test, error reset or working frame write.
 - `raw` refuses `99` and `10 21`, even with `--yes`. On F0513 packs `99` opens a command tree that includes a fuse
   trigger and a massive reset, and `10 21` overwrites the ROM id. Do not send other unknown commands to a battery.
@@ -68,7 +69,7 @@ Close the OBI web tool first, because only one program can hold the serial port.
 
 Read commands and entering and leaving test mode are tested on a real 2014 BL1850 that reports no model and has no
 LEDs, so the LED commands ran but their effect was not seen: they replied `07`, not the usual `06`. Frame writes,
-`unlock`, `reset-errors` and `restore` are covered by simulated tests only and have not been run on a real battery. Support for controller types other than this pack is implemented
+`reset-errors` has been run once, on a real BL1850. `unlock` and `restore` are covered by simulated tests only and have not been run on a real battery. Support for controller types other than this pack is implemented
 from public notes and is untested.
 
 ## Credits

@@ -30,7 +30,7 @@ venv/bin/makita-tool raw cc d7 0e 00 02 --read 3
 Get the user's explicit approval for each run. Do not pass `--yes` unless the user approved that exact operation.
 
 - `unlock`: clears a false lockout and backs up the frame first. It tries the error reset, and writes the frame only if the pack is still locked.
-- `reset-errors`: clears the error register. Refused on type 5 packs, which are read only: sources report no LED control, no error reset, and frame writes that do nothing.
+- `reset-errors`: sends `DA 04`, which clears the error register and wipes battery history. `unlock` runs the same step first. On a real BL1850 (type 2) `DA 04` also reset the charge cycle count from 35 to 0 and the damage rating from 1 to 0, and changed frame bytes 15, 21, 23, 27, 29 and 31, even though the failure code was already OK. The change survived a power cycle. The pack stayed unlocked. Whether other counters are cleared is unknown. Tell the user this before asking for approval. Refused on type 5 packs, which are read only: sources report no LED control, no error reset, and frame writes that do nothing.
 - `led-test`, `--probe-test-mode`: enter test mode briefly. `led-test` is not supported on type 5: a real BL1860B refused `d9 96 a5` in both `cc` and `33` forms, and `cc 99` followed by `33 da 31` lit nothing.
 - `restore FILE`: undoes an unlock on the same pack. It refuses a backup that differs outside the lock fields, so old backups stop working once the cycle count changes. Backups are in `~/.local/state/makita_tool/backups`.
 - `exit-test-mode`: leaves test mode. On a real BL1850, Enable low for 2 s ended test mode too, and removing the pack should do the same.
@@ -59,4 +59,4 @@ Pins are set in `platformio.ini`: `OBI_OW_PIN=13` (D7), `OBI_EN_PIN=12` (D6). Do
 
 ## Status
 
-Reads and entering and leaving test mode are tested on a real BL1850. Frame writes, `unlock`, `reset-errors` and `restore` are tested in simulation only, so treat the first real write as an experiment and tell the user this before running it.
+Reads and entering and leaving test mode are tested on a real BL1850. `reset-errors` has been run once on a real BL1850, see its effect above. Frame writes, `unlock` and `restore` are tested in simulation only, so treat the first real write as an experiment and tell the user this before running it.

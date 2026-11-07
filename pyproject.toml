@@ -1,6 +1,6 @@
 [project]
 name = "makita-tool"
-version = "0.2.1"
+version = "0.2.2"
 description = "Read and service Makita LXT batteries through a D1 mini"
 requires-python = ">=3.11"
 dependencies = ["pyserial>=3.5"]
