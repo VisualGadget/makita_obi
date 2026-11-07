@@ -33,7 +33,7 @@ Get the user's explicit approval for each run. Do not pass `--yes` unless the us
 - `reset-errors`: clears the error register.
 - `led-test`, `--probe-test-mode`: enter test mode briefly.
 - `restore FILE`: undoes an unlock on the same pack. It refuses a backup that differs outside the lock fields, so old backups stop working once the cycle count changes. Backups are in `~/.local/state/makita_tool/backups`.
-- `exit-test-mode`: recovers a pack left in test mode, which cannot power tools or charge.
+- `exit-test-mode`: leaves test mode. On a real BL1850, Enable low for 2 s ended test mode too, and removing the pack should do the same.
 
 Run `info` and `unlock --dry-run` first and show the user the result. Do not weaken the unlock refusals, clear a dead failure code, or edit the cycle count: a lockout can be real protection, and the cycle count is the pack's true history.
 
@@ -44,6 +44,7 @@ Run `info` and `unlock --dry-run` first and show the user the result. Do not wea
 - Model marked "estimated from capacity": the pack did not report a model. Capacity cannot separate a BL1850 from a BL1850B, and packs without LEDs are the non-B models, so check the label.
 - `DA 31` and `DA 34` (LED commands) replied `07` on a BL1850 with no LEDs. The meaning of `07` is unknown.
 - Controller type unknown: the pack may be type 2, which only test mode can confirm. Type 2 health and event counters also answer only in test mode, so `info --probe-test-mode` is needed to see them.
+- Checking test mode: on a real BL1850 the frame stayed valid in test mode, and `exit-test-mode` acknowledged even outside it, so neither proves the state. `raw cc d6 04 05 02 --read 3` ends in `06` only in test mode on a type 2 pack, but a new run drops Enable first, so check within one session.
 - Temperatures use 0.1 K units. The OBI web tool shows them about 3 °C too high because it treats the value as 0.01 °C.
 - `status code` in the web tool is byte 19 of the frame. It is a factory value, not a fault code. Use the failure code instead.
 - The web tool stops with "Unsupported Battery" when a pack reports no model, even though live data works. Use `makita-tool` for those packs.

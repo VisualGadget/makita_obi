@@ -57,7 +57,8 @@ Close the OBI web tool first, because only one program can hold the serial port.
 - `restore` only undoes an unlock: it refuses a backup that differs from the pack outside the lock fields.
 - A write stops if test mode is refused, the pack does not arm, or the ROM id changes. The pack arms once per
   insertion, so reinsert it before retrying.
-- A pack in test mode cannot power tools or charge. The tool always leaves test mode, and `exit-test-mode` recovers it.
+- Public notes say a pack in test mode cannot power tools or charge. The tool always leaves test mode, and on the
+  tested BL1850 holding Enable low for 2 s also ended it.
 - Lithium-ion packs can be dangerous. A lockout is often real protection, so do not charge a pack you do not trust.
 
 ## Status
