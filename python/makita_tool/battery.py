@@ -181,8 +181,8 @@ class Battery:
     def read_frame(self) -> tuple[bytes, Frame]:
         """Read the ROM id and the basic information frame.
 
-        A non Makita TPCELL pack answers skip ROM with a fixed frame and nothing else, so a blank
-        read is only a wiring fault when that frame is missing too. Another fake sends one burst
+        A third party TPCELL pack answers skip ROM with a fixed frame and nothing else, so a blank
+        read is only a wiring fault when that frame is missing too. A pack with fake Makita labels sends one burst
         after Enable whatever it is asked, so a second read has to match the first.
 
         :return: ROM id and frame.

@@ -55,7 +55,8 @@ Close the OBI web tool first, because only one program can hold the serial port.
 - `unlock` tries the error reset first and only writes the frame if the pack is still locked.
 - `unlock` never clears the dead failure code or writes a changed cycle count, but its `DA 04` step can reset history, see below.
 - `restore` only undoes an unlock: it refuses a backup that differs from the pack outside the lock fields.
-  `--allow-history` lifts that for a valid backup of the same pack, to put back its own history.
+  `--allow-history` lifts that for a valid backup of the same pack, to put back its own history. Use it only for that,
+  and do not misrepresent the history of a pack you sell or pass on.
 - A write stops if test mode is refused, the pack does not arm, or the ROM id changes. The pack arms once per
   insertion, so reinsert it before retrying.
 - Public notes say a pack in test mode cannot power tools or charge. The tool always leaves test mode, and on the
@@ -85,7 +86,7 @@ from public notes and is untested.
 
 ## Packs that only imitate the interface
 
-A non Makita TPCELL "BL1850B" (18 V, 5.0 Ah, 90 Wh, label charging limit 20.75 V) answers `cc aa 00` with a fixed
+A third party TPCELL "BL1850B" (18 V, 5.0 Ah, 90 Wh, label charging limit 20.75 V) answers `cc aa 00` with a fixed
 frame and nothing else, which may be all a charger needs:
 
 ```text
@@ -101,7 +102,7 @@ F1 36 B6 C3 18 58 00 00 94 94 40 21 01 80 02 09 43 D0 8E 1B F0 65 00 00 00 00 00
 `info` prints this frame with a warning. `monitor`, `led-test`, `reset-errors`, `unlock` and `restore` refuse packs without a ROM id, while `raw` and `exit-test-mode` are not blocked. The frame
 says nothing about the cells, and this test does not show whether the pack has cell protection.
 
-A second fake carries Makita labels: "BL2110B", 21 V, 10.0 Ah, 210 Wh, cell code `5INR19/66-2`, with a charge
+A different pack carries fake Makita labels: "BL2110B", 21 V, 10.0 Ah, 210 Wh, cell code `5INR19/66-2`, with a charge
 indicator. It has 21700 cells inside and about the labelled capacity, so the cell code on the case is false. It behaves
 differently from the TPCELL:
 
@@ -122,8 +123,18 @@ F1 26 BD 13 14 58 00 00 94 94 40 21 D0 80 02 08 C3 D0 8E 67 60 F0 00 01 02 02 0E
 `read_frame` reads twice, and a second read that differs stops every command that reads the frame, including `info`.
 The tool does not rebuild this frame itself.
 
+## Disclaimer
+
+This is an independent project, not affiliated with or endorsed by Makita. Makita and product names are used only to
+describe compatibility, and all trademarks belong to their owners.
+
+The tool writes to lithium battery packs, and a wrong write can disable a pack. Use it at your own risk: see the licence
+for the warranty terms.
+
 ## Credits
 
 Protocol facts come from [makita-lxt-protocol](https://github.com/rosvall/makita-lxt-protocol) by rosvall, Open
 Battery Information by Martin Jansson, and the public notes of PocketOBI, makita-battery-tools and
 Makita-LXT-Battery-Monitor-Unlocker. No code from those last three projects is included.
+
+`lib/OneWire` is the OneWire library for Arduino, under the licence in `lib/OneWire/OneWire2.cpp`.
