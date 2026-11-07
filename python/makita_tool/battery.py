@@ -4,10 +4,10 @@ Commands come from the public reverse engineering notes in makita-lxt-protocol b
 Open Battery Information. Frame write steps were cross-checked against other open projects.
 """
 
+import asyncio
 import json
-import time
-from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -44,7 +44,7 @@ OVERLOAD_COMMANDS = {
 class Transport(Protocol):
     """Link operations used by the battery layer."""
 
-    def skip(self, data: bytes, reply_length: int = 0) -> bytes:
+    async def skip(self, data: bytes, reply_length: int = 0) -> bytes:
         """Run a skip ROM transaction.
 
         :param data: Bytes written after the CC byte.
@@ -52,7 +52,7 @@ class Transport(Protocol):
         :return: Reply bytes.
         """
 
-    def raw(self, data: bytes, reply_length: int = 0) -> bytes:
+    async def raw(self, data: bytes, reply_length: int = 0) -> bytes:
         """Run a transaction without a ROM command.
 
         :param data: Bytes written after the bus reset.
@@ -60,7 +60,7 @@ class Transport(Protocol):
         :return: Reply bytes.
         """
 
-    def query(self, command: int, data: bytes = b'', reply_length: int = 0) -> bytes:
+    async def query(self, command: int, data: bytes = b'', reply_length: int = 0) -> bytes:
         """Send one firmware frame.
 
         :param command: Firmware command.
@@ -69,7 +69,7 @@ class Transport(Protocol):
         :return: Reply bytes.
         """
 
-    def session(self) -> AbstractContextManager[None]:
+    def session(self) -> AbstractAsyncContextManager[None]:
         """Hold Enable high across several frames."""
 
 
@@ -178,7 +178,7 @@ class Battery:
         """
         self._link = link
 
-    def read_frame(self) -> tuple[bytes, Frame]:
+    async def read_frame(self) -> tuple[bytes, Frame]:
         """Read the ROM id and the basic information frame.
 
         A third party TPCELL pack answers skip ROM with a fixed frame and nothing else, so a blank
@@ -187,36 +187,36 @@ class Battery:
 
         :return: ROM id and frame.
         """
-        reply = self._link.query(command=0x33, data=b'\xaa\x00', reply_length=ROM_LENGTH + FRAME_LENGTH)
+        reply = await self._link.query(command=0x33, data=b'\xaa\x00', reply_length=ROM_LENGTH + FRAME_LENGTH)
         if is_blank(reply):
-            fixed = self._link.skip(data=b'\xaa\x00', reply_length=FRAME_LENGTH)
+            fixed = await self._link.skip(data=b'\xaa\x00', reply_length=FRAME_LENGTH)
             if is_blank(fixed):
                 raise BatteryError('no data from the battery: check Enable, 1-Wire and ground wiring')
 
             raise NoRomIdError(frame=Frame(data=fixed))
 
-        if self._link.query(command=0x33, data=b'\xaa\x00', reply_length=ROM_LENGTH + FRAME_LENGTH) != reply:
+        if await self._link.query(command=0x33, data=b'\xaa\x00', reply_length=ROM_LENGTH + FRAME_LENGTH) != reply:
             raise StreamingPackError
 
         return reply[:ROM_LENGTH], Frame(data=reply[ROM_LENGTH:])
 
-    def _acked(self, command: bytes, reply_length: int) -> bytes | None:
+    async def _acked(self, command: bytes, reply_length: int) -> bytes | None:
         """Run a command whose reply ends with the acknowledge byte.
 
         :param command: Bytes written after the CC byte.
         :param reply_length: Reply length, including the acknowledge byte.
         :return: Reply without the acknowledge byte, or None when it is not supported.
         """
-        reply = self._link.skip(data=command, reply_length=reply_length)
+        reply = await self._link.skip(data=command, reply_length=reply_length)
 
         return reply[:-1] if reply[-1] == ACK else None
 
-    def read_model(self) -> str | None:
+    async def read_model(self) -> str | None:
         """Read the model string.
 
         :return: Model, or None when the pack does not report one.
         """
-        reply = self._link.skip(data=b'\xdc\x0c', reply_length=16)
+        reply = await self._link.skip(data=b'\xdc\x0c', reply_length=16)
         if is_blank(reply):
             return None
 
@@ -224,7 +224,7 @@ class Battery:
 
         return text or None
 
-    def detect_type(self, rom: bytes, frame: Frame, probe_test_mode: bool = False) -> int | None:
+    async def detect_type(self, rom: bytes, frame: Frame, probe_test_mode: bool = False) -> int | None:
         """Detect the controller type.
 
         Type 2 can only be confirmed in test mode, so without the probe such packs read as unknown.
@@ -240,16 +240,16 @@ class Battery:
         if frame.is_ten_cell:
             return 6
 
-        if self._acked(command=b'\xdc\x0b', reply_length=17) is not None:
+        if await self._acked(command=b'\xdc\x0b', reply_length=17) is not None:
             return 0
 
-        if self._acked(command=bytes.fromhex('d42c0002'), reply_length=3) is not None:
+        if await self._acked(command=bytes.fromhex('d42c0002'), reply_length=3) is not None:
             return 3
 
         if probe_test_mode:
             try:
-                with self.test_mode():
-                    if self._acked(command=b'\xdc\x0a', reply_length=17) is not None:
+                async with self.test_mode():
+                    if await self._acked(command=b'\xdc\x0a', reply_length=17) is not None:
                         return 2
 
             except ModeEntryError:
@@ -257,36 +257,36 @@ class Battery:
 
         return None
 
-    def read_live(self, controller_type: int | None) -> LiveData:
+    async def read_live(self, controller_type: int | None) -> LiveData:
         """Read voltages and temperatures.
 
         :param controller_type: Controller type.
         :return: Measurements.
         """
         if controller_type == 5:
-            return self._read_live_type5()
+            return await self._read_live_type5()
 
         if controller_type == 6:
-            return self._read_live_type6()
+            return await self._read_live_type6()
 
         live = LiveData()
-        voltages = self._acked(command=bytes.fromhex('d700000c'), reply_length=13)
+        voltages = await self._acked(command=bytes.fromhex('d700000c'), reply_length=13)
         if voltages is not None:
             values = [int.from_bytes(voltages[index : index + 2], 'little') / 1000 for index in range(0, 12, 2)]
             live.pack_voltage = values[0]
             live.cell_voltages = values[1:]
 
-        temperature = self._acked(command=bytes.fromhex('d70e0002'), reply_length=3)
+        temperature = await self._acked(command=bytes.fromhex('d70e0002'), reply_length=3)
         if temperature is not None:
             live.temperature_c = kelvin_tenths_to_c(int.from_bytes(temperature, 'little'))
 
-        extended = self._link.skip(data=bytes.fromhex('d70000ff'), reply_length=EXTENDED_READ_LENGTH)
+        extended = await self._link.skip(data=bytes.fromhex('d70000ff'), reply_length=EXTENDED_READ_LENGTH)
         if not is_blank(extended[16:18]):
             live.temperature2_c = kelvin_tenths_to_c(int.from_bytes(extended[16:18], 'little'))
 
         return live
 
-    def _read_live_type5(self) -> LiveData:
+    async def _read_live_type5(self) -> LiveData:
         """Read measurements from an F0513 based pack.
 
         Sending the F0 00 clear first scrambled these replies on a real BL1860B, and it also changes
@@ -298,31 +298,33 @@ class Battery:
         for _ in range(TYPE5_READ_ATTEMPTS):
             cells = []
             for command in (0x31, 0x32, 0x33, 0x34, 0x35):
-                cells.append(int.from_bytes(self._link.skip(data=bytes([command]), reply_length=2), 'little') / 1000)
+                cells.append(
+                    int.from_bytes(await self._link.skip(data=bytes([command]), reply_length=2), 'little') / 1000
+                )
 
             if all(0 < cell <= MAX_CELL_V for cell in cells):
                 break
 
-            time.sleep(STEP_WAIT_S)
+            await asyncio.sleep(STEP_WAIT_S)
 
         else:
             return LiveData()
 
-        temperature = int.from_bytes(self._link.skip(data=b'\x52', reply_length=2), 'little')
+        temperature = int.from_bytes(await self._link.skip(data=b'\x52', reply_length=2), 'little')
 
         return LiveData(
             pack_voltage=round(sum(cells), 3), cell_voltages=cells, temperature_c=kelvin_tenths_to_c(temperature)
         )
 
-    def _read_live_type6(self) -> LiveData:
+    async def _read_live_type6(self) -> LiveData:
         """Read measurements from a 10-cell pack.
 
         :return: Measurements.
         """
-        self._link.skip(data=b'\x10\x21')
-        reply = self._link.raw(data=b'\xd4', reply_length=20)
+        await self._link.skip(data=b'\x10\x21')
+        reply = await self._link.raw(data=b'\xd4', reply_length=20)
         cells = [(6000 - int.from_bytes(reply[i : i + 2], 'little') / 10) / 1000 for i in range(0, 20, 2)]
-        raw = self._link.raw(data=b'\xd2', reply_length=1)[0]
+        raw = (await self._link.raw(data=b'\xd2', reply_length=1))[0]
 
         return LiveData(
             pack_voltage=round(sum(cells), 3),
@@ -330,22 +332,22 @@ class Battery:
             temperature_c=round((-40 * raw + 9323) / 100, 2),
         )
 
-    def report(self, probe_test_mode: bool = False) -> Report:
+    async def report(self, probe_test_mode: bool = False) -> Report:
         """Read everything the pack offers without changing it.
 
         :param probe_test_mode: Allow a short visit to test mode to identify the controller.
         :return: Battery report.
         """
-        with self._link.session():
+        async with self._link.session():
             try:
-                rom, frame = self.read_frame()
+                rom, frame = await self.read_frame()
 
             except NoRomIdError as error:
                 return self._emulated_report(frame=error.frame)
 
-            model = self.read_model()
-            controller_type = self.detect_type(rom=rom, frame=frame, probe_test_mode=probe_test_mode)
-            live = self.read_live(controller_type=controller_type)
+            model = await self.read_model()
+            controller_type = await self.detect_type(rom=rom, frame=frame, probe_test_mode=probe_test_mode)
+            live = await self.read_live(controller_type=controller_type)
             report = Report(
                 rom=rom.hex(' ').upper(),
                 frame=frame.data.hex(' ').upper(),
@@ -364,12 +366,29 @@ class Battery:
                 live=live,
             )
             if controller_type == 2:
-                with self.test_mode():
-                    self._read_counters(report=report, frame=frame, controller_type=controller_type)
+                async with self.test_mode():
+                    await self._read_counters(report=report, frame=frame, controller_type=controller_type)
             else:
-                self._read_counters(report=report, frame=frame, controller_type=controller_type)
+                await self._read_counters(report=report, frame=frame, controller_type=controller_type)
 
         return report
+
+    async def refresh(self, report: Report) -> bool:
+        """Update the measurements of a report without entering test mode.
+
+        :param report: Report of this pack, updated in place.
+        :return: False when the pack or its frame changed, and the report needs a full read.
+        """
+        async with self._link.session():
+            rom, frame = await self.read_frame()
+            if rom.hex(' ').upper() != report.rom or frame.data.hex(' ').upper() != report.frame:
+                return False
+
+            report.live = await self.read_live(controller_type=report.controller_type)
+            if report.controller_type != 2:
+                await self._read_counters(report=report, frame=frame, controller_type=report.controller_type)
+
+        return True
 
     @staticmethod
     def _emulated_report(frame: Frame) -> Report:
@@ -397,7 +416,7 @@ class Battery:
             emulated=True,
         )
 
-    def _read_counters(self, report: Report, frame: Frame, controller_type: int | None) -> None:
+    async def _read_counters(self, report: Report, frame: Frame, controller_type: int | None) -> None:
         """Add health and event counters to a report.
 
         :param report: Report to fill.
@@ -410,24 +429,24 @@ class Battery:
             report.overload_percent = frame.overload_percent
 
         if controller_type in (0, None):
-            charge = self._acked(command=bytes.fromhex('d7190004'), reply_length=5)
+            charge = await self._acked(command=bytes.fromhex('d7190004'), reply_length=5)
             report.charge_level_raw = None if charge is None else int.from_bytes(charge, 'little')
 
         if controller_type not in HEALTH_COMMANDS:
             return
 
-        health = self._acked(command=HEALTH_COMMANDS[controller_type], reply_length=3)
+        health = await self._acked(command=HEALTH_COMMANDS[controller_type], reply_length=3)
         if health is not None and frame.capacity:
             report.health_raw = int.from_bytes(health, 'little')
             ratio = report.health_raw / frame.capacity
             report.health_rating = 4.0 if ratio > 80 else round(max(ratio / 10 - 5, 0.0), 1)
 
-        overdischarge = self._acked(command=OVERDISCHARGE_COMMANDS[controller_type], reply_length=2)
+        overdischarge = await self._acked(command=OVERDISCHARGE_COMMANDS[controller_type], reply_length=2)
         if overdischarge is not None:
             report.overdischarge_events = overdischarge[0]
 
         command, length = OVERLOAD_COMMANDS[controller_type]
-        overload = self._acked(command=command, reply_length=length)
+        overload = await self._acked(command=command, reply_length=length)
         if overload is not None:
             report.overload_events = self._overload_total(reply=overload, controller_type=controller_type)
 
@@ -450,33 +469,33 @@ class Battery:
 
         return first + second + third
 
-    @contextmanager
-    def test_mode(self, require_exit_ack: bool = True) -> Iterator[None]:
+    @asynccontextmanager
+    async def test_mode(self, require_exit_ack: bool = True) -> AsyncIterator[None]:
         """Keep the pack in test mode for a block: it cannot power tools or charge while there.
 
         :param require_exit_ack: Treat a missing acknowledge on leaving as an error.
         """
-        if self._link.skip(data=bytes.fromhex('d996a5'), reply_length=1) != ACK_REPLY:
-            self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1)
+        if await self._link.skip(data=bytes.fromhex('d996a5'), reply_length=1) != ACK_REPLY:
+            await self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1)
             raise ModeEntryError('the battery did not accept test mode, nothing was changed')
 
-        time.sleep(STEP_WAIT_S)
+        await asyncio.sleep(STEP_WAIT_S)
         try:
             yield
         finally:
-            self.exit_test_mode(require_ack=require_exit_ack)
+            await self.exit_test_mode(require_ack=require_exit_ack)
 
-    def exit_test_mode(self, require_ack: bool = True) -> None:
+    async def exit_test_mode(self, require_ack: bool = True) -> None:
         """Leave test mode.
 
         :param require_ack: Treat a missing acknowledge as an error.
         """
-        if self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1) != ACK_REPLY and require_ack:
+        if await self._link.skip(data=bytes.fromhex('d9ffff'), reply_length=1) != ACK_REPLY and require_ack:
             raise BatteryError('no acknowledge when leaving test mode: run exit-test-mode, then check the pack')
 
-        time.sleep(STEP_WAIT_S)
+        await asyncio.sleep(STEP_WAIT_S)
 
-    def _rom_step(self, rom: bytes, data: bytes, reply_length: int = 0) -> bytes:
+    async def _rom_step(self, rom: bytes, data: bytes, reply_length: int = 0) -> bytes:
         """Run a read ROM transaction and check that the same battery answered.
 
         :param rom: Expected ROM id.
@@ -484,7 +503,7 @@ class Battery:
         :param reply_length: Number of bytes read after the ROM id.
         :return: Bytes read after the ROM id.
         """
-        reply = self._link.query(command=0x33, data=data, reply_length=ROM_LENGTH + reply_length)
+        reply = await self._link.query(command=0x33, data=data, reply_length=ROM_LENGTH + reply_length)
         if reply[:ROM_LENGTH] != rom:
             raise BatteryError(f'ROM id changed during {data[:2].hex(" ")}: {reply[:ROM_LENGTH].hex(" ")}')
 
@@ -500,48 +519,48 @@ class Battery:
         if rom[3] < TYPE5_ROM_LIMIT:
             raise BatteryError(TYPE5_REFUSALS[command])
 
-    def check_supported(self, command: str) -> None:
+    async def check_supported(self, command: str) -> None:
         """Read the battery and stop if it does not support a command.
 
         This only reads, so it can run before the user is asked to confirm.
 
         :param command: Key in TYPE5_REFUSALS.
         """
-        with self._link.session():
-            self._refuse_type5(rom=self.read_frame()[0], command=command)
+        async with self._link.session():
+            self._refuse_type5(rom=(await self.read_frame())[0], command=command)
 
-    def led_test(self, seconds: float) -> bytes:
+    async def led_test(self, seconds: float) -> bytes:
         """Light all battery LEDs for a while.
 
         :param seconds: Time the LEDs stay on.
         :return: Reply bytes of the on and off commands.
         """
-        with self._link.session():
-            rom = self.read_frame()[0]
+        async with self._link.session():
+            rom = (await self.read_frame())[0]
             self._refuse_type5(rom=rom, command='led-test')
-            with self.test_mode():
-                replies = self._rom_step(rom=rom, data=b'\xda\x31', reply_length=1)
-                time.sleep(seconds)
-                replies += self._rom_step(rom=rom, data=b'\xda\x34', reply_length=1)
+            async with self.test_mode():
+                replies = await self._rom_step(rom=rom, data=b'\xda\x31', reply_length=1)
+                await asyncio.sleep(seconds)
+                replies += await self._rom_step(rom=rom, data=b'\xda\x34', reply_length=1)
 
         return replies
 
-    def reset_errors(self) -> None:
+    async def reset_errors(self) -> None:
         """Clear the error register of the battery, then power cycle it so the change is kept.
 
         On a real BL1850 this also reset the cycle count and the damage rating to 0.
         The reply byte is not checked: its meaning is not documented, and DA commands answered 07
         on a real BL1850.
         """
-        with self._link.session():
-            rom = self.read_frame()[0]
+        async with self._link.session():
+            rom = (await self.read_frame())[0]
             self._refuse_type5(rom=rom, command='reset-errors')
-            with self.test_mode():
-                self._rom_step(rom=rom, data=b'\xda\x04', reply_length=1)
+            async with self.test_mode():
+                await self._rom_step(rom=rom, data=b'\xda\x04', reply_length=1)
 
-        time.sleep(COMMIT_WAIT_S)
+        await asyncio.sleep(COMMIT_WAIT_S)
 
-    def _write_frame(self, rom: bytes, frame: Frame) -> None:
+    async def _write_frame(self, rom: bytes, frame: Frame) -> None:
         """Write a frame to the battery, then power cycle it so the frame is committed.
 
         The write and store commands have no reply, so the arm reply and the ROM id are the only
@@ -552,19 +571,19 @@ class Battery:
         :param rom: ROM id of the battery.
         :param frame: Frame to write.
         """
-        with self._link.session(), self.test_mode(require_exit_ack=False):
-            if is_blank(self._link.skip(data=b'\xf0\x00', reply_length=FRAME_LENGTH)):
+        async with self._link.session(), self.test_mode(require_exit_ack=False):
+            if is_blank(await self._link.skip(data=b'\xf0\x00', reply_length=FRAME_LENGTH)):
                 raise BatteryError('the battery refused to arm: it arms once per insertion, so reinsert it and retry')
 
-            time.sleep(STEP_WAIT_S)
-            self._rom_step(rom=rom, data=b'\x0f\x00' + frame.data)
-            time.sleep(STEP_WAIT_S)
-            self._rom_step(rom=rom, data=b'\x55\xa5')
-            time.sleep(STEP_WAIT_S)
+            await asyncio.sleep(STEP_WAIT_S)
+            await self._rom_step(rom=rom, data=b'\x0f\x00' + frame.data)
+            await asyncio.sleep(STEP_WAIT_S)
+            await self._rom_step(rom=rom, data=b'\x55\xa5')
+            await asyncio.sleep(STEP_WAIT_S)
 
-        time.sleep(COMMIT_WAIT_S)
-        with self._link.session():
-            if not is_blank(self._link.skip(data=HEALTH_COMMANDS[2], reply_length=2)):
+        await asyncio.sleep(COMMIT_WAIT_S)
+        async with self._link.session():
+            if not is_blank(await self._link.skip(data=HEALTH_COMMANDS[2], reply_length=2)):
                 raise BatteryError('the pack is still in test mode after the write: run exit-test-mode, then check it')
 
     def unlock_blockers(self, frame: Frame, controller_type: int | None, live: LiveData) -> list[str]:
@@ -601,16 +620,16 @@ class Battery:
 
         return blockers
 
-    def plan_unlock(self, probe_test_mode: bool = False) -> tuple[bytes, Frame, Frame | None, bool, list[str]]:
+    async def plan_unlock(self, probe_test_mode: bool = False) -> tuple[bytes, Frame, Frame | None, bool, list[str]]:
         """Work out what an unlock would do, without writing.
 
         :param probe_test_mode: Allow a short visit to test mode to identify the controller.
         :return: ROM id, current frame, frame to write or None, whether to clear errors, blockers.
         """
-        with self._link.session():
-            rom, frame = self.read_frame()
-            controller_type = self.detect_type(rom=rom, frame=frame, probe_test_mode=probe_test_mode)
-            live = self.read_live(controller_type=controller_type)
+        async with self._link.session():
+            rom, frame = await self.read_frame()
+            controller_type = await self.detect_type(rom=rom, frame=frame, probe_test_mode=probe_test_mode)
+            live = await self.read_live(controller_type=controller_type)
 
         target = frame.repaired() if frame.lock_causes else None
         clear_errors = frame.failure_code in (0x1, 0x5)
@@ -619,15 +638,15 @@ class Battery:
 
         return rom, frame, target, clear_errors, blockers
 
-    def _read_back(self) -> Frame:
+    async def _read_back(self) -> Frame:
         """Read the frame in a new session.
 
         :return: Frame read from the battery.
         """
-        with self._link.session():
-            return self.read_frame()[1]
+        async with self._link.session():
+            return (await self.read_frame())[1]
 
-    def unlock(self, probe_test_mode: bool = False) -> Frame:
+    async def unlock(self, probe_test_mode: bool = False) -> Frame:
         """Clear a false lockout, after backing up the frame.
 
         The error reset runs first, because it needs no frame write. The frame is only written
@@ -636,7 +655,7 @@ class Battery:
         :param probe_test_mode: Allow a short visit to test mode to identify the controller.
         :return: Frame read back from the battery.
         """
-        rom, frame, target, clear_errors, blockers = self.plan_unlock(probe_test_mode=probe_test_mode)
+        rom, frame, target, clear_errors, blockers = await self.plan_unlock(probe_test_mode=probe_test_mode)
         if blockers:
             raise BatteryError('unlock refused: ' + '; '.join(blockers))
 
@@ -644,19 +663,19 @@ class Battery:
             return frame
 
         backup = backup_frame(rom=rom, frame=frame)
-        self.reset_errors()
-        result = self._read_back()
+        await self.reset_errors()
+        result = await self._read_back()
         if result.lock_causes:
-            self._write_frame(rom=rom, frame=result.repaired())
-            self.reset_errors()
-            result = self._read_back()
+            await self._write_frame(rom=rom, frame=result.repaired())
+            await self.reset_errors()
+            result = await self._read_back()
 
         if result.lock_causes:
             raise BatteryError(f'still locked: {", ".join(result.lock_causes)}. Backup: {backup}')
 
         return result
 
-    def restore(self, path: Path, allow_history: bool = False) -> Frame:
+    async def restore(self, path: Path, allow_history: bool = False) -> Frame:
         """Write a backup frame back to the same battery.
 
         By default only the fields an unlock changes may differ, so a backup can not rewrite the
@@ -674,8 +693,8 @@ class Battery:
         except (OSError, KeyError, TypeError, ValueError) as error:
             raise BatteryError(f'cannot use backup {path}: {error}') from error
 
-        with self._link.session():
-            rom, frame = self.read_frame()
+        async with self._link.session():
+            rom, frame = await self.read_frame()
             if rom != saved_rom:
                 raise BatteryError(f'backup belongs to another battery: {saved_rom.hex(" ")}')
 
@@ -689,14 +708,14 @@ class Battery:
             if frame == target:
                 return frame
 
-            controller_type = self.detect_type(rom=rom, frame=frame, probe_test_mode=True)
+            controller_type = await self.detect_type(rom=rom, frame=frame, probe_test_mode=True)
 
         if controller_type not in (0, 2, 3):
             raise BatteryError(f'restore is not validated for controller type {controller_type}')
 
         backup = backup_frame(rom=rom, frame=frame)
-        self._write_frame(rom=rom, frame=target)
-        result = self._read_back()
+        await self._write_frame(rom=rom, frame=target)
+        result = await self._read_back()
         if result != target:
             raise BatteryError(f'read back differs from the backup. Previous frame: {backup}')
 

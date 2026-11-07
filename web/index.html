@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>makita_obi battery tool</title>
+  <meta name="description" content="Read and unlock Makita LXT batteries from the browser through a Wemos D1 mini.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>makita_obi battery tool</h1>
+      <p>Read Makita LXT 18 V batteries through a Wemos D1 mini running the
+        <a href="https://github.com/VisualGadget/makita_obi">makita_obi firmware</a>.
+        Everything runs in this browser tab, and nothing about your battery is uploaded.</p>
+    </header>
+
+    <p id="unsupported" class="notice error" hidden>This browser has no Web Serial support, so it cannot reach the
+      adapter. Try a recent Chrome, Edge or Firefox over HTTPS.</p>
+
+    <details id="firmware">
+      <summary>First time? Install the firmware</summary>
+      <p>Build the adapter from the <a href="https://github.com/VisualGadget/makita_obi#wiring">wiring guide</a>, then
+        install the makita_obi firmware on its Wemos D1 mini. Take the battery off the adapter first.</p>
+      <div id="install-ready">
+        <esp-web-install-button manifest="firmware/manifest.json">
+          <button slot="activate">Install firmware</button>
+          <span slot="unsupported">This browser can not install firmware.</span>
+          <span slot="not-allowed">Installing firmware needs an HTTPS page.</span>
+        </esp-web-install-button>
+      </div>
+      <p id="install-blocked" class="hint" hidden>Disconnect below first: the installer needs the serial port.</p>
+      <p class="hint">Installer not working? Flash <a href="firmware/firmware.bin">firmware.bin</a> at address 0 with
+        the <a href="https://espressif.github.io/esptool-js/">esptool-js page</a>.</p>
+    </details>
+
+    <section aria-labelledby="connection-title">
+      <h2 id="connection-title">Connection</h2>
+      <div class="row">
+        <button id="connect" disabled>Loading...</button>
+        <span id="status" role="status">Loading the tool, about 15 MB on the first visit.</span>
+      </div>
+    </section>
+
+    <section aria-labelledby="battery-title">
+      <h2 id="battery-title">Battery</h2>
+      <div class="row">
+        <button id="read" disabled>Read battery</button>
+        <button id="monitor" disabled aria-pressed="false">Start monitor</button>
+      </div>
+      <p class="hint">Reading enters test mode briefly on packs that can not be identified without it. The monitor
+        refreshes voltages and temperatures every 5 seconds, for watching a pack under charge or load.</p>
+      <div id="report-warning" class="notice warning" hidden></div>
+      <div id="report-error" class="notice error" hidden></div>
+      <table id="report" hidden><tbody></tbody></table>
+    </section>
+
+    <section id="unlock-section" aria-labelledby="unlock-title" hidden>
+      <h2 id="unlock-title">Unlock</h2>
+      <p>This pack reads as locked. A lockout is often real protection, so unlock only a pack you trust.</p>
+      <button id="plan">Check whether it can be unlocked</button>
+      <p class="hint">This check enters test mode briefly on some packs, and changes nothing.</p>
+      <div id="plan-result" hidden>
+        <div id="plan-error" class="notice error" hidden></div>
+        <ul id="blockers" class="notice error" hidden></ul>
+        <div id="plan-ok" hidden>
+          <p class="notice warning">Unlocking sends the DA 04 reset. On a real BL1850 that also reset the cycle count
+            and damage rating to 0, and those can not be put back from this page. If the pack stays locked, a repaired
+            frame is written. A failed write can disable the pack.</p>
+          <p class="mono" id="plan-frame"></p>
+          <div class="row">
+            <button id="backup">Download frame backup</button>
+          </div>
+          <label for="confirm-unlock">Type UNLOCK to continue</label>
+          <div class="row">
+            <input id="confirm-unlock" autocomplete="off" spellcheck="false">
+            <button id="unlock" class="danger" disabled>Unlock this pack</button>
+          </div>
+          <p class="hint">Download the backup first. The button stays off until you have.</p>
+        </div>
+      </div>
+      <div id="unlock-result" class="notice" hidden></div>
+    </section>
+
+    <footer>
+      <p>Independent project, not affiliated with or endorsed by Makita. It writes to lithium battery packs: use it at
+        your own risk. <a href="https://github.com/VisualGadget/makita_obi">Source and wiring on GitHub</a>, MIT licence.
+      </p>
+      <p id="versions"></p>
+    </footer>
+  </main>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

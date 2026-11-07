@@ -1,16 +1,21 @@
 """Tests for frame decoding and battery operations, using a frame read from a real BL1850 pack."""
 
+import asyncio
+import inspect
 import json
 from argparse import Namespace
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from makita_tool import __main__ as cli
 from makita_tool import battery as battery_module
-from makita_tool.battery import Battery, BatteryError, LiveData, NoRomIdError, StreamingPackError, kelvin_tenths_to_c
+from makita_tool.battery import Battery as AsyncBattery
+from makita_tool.battery import BatteryError, LiveData, NoRomIdError, StreamingPackError, kelvin_tenths_to_c
 from makita_tool.frame import Frame, manufacture_date, set_nybble
+from makita_tool.web import WebTool
 
 ROM = bytes.fromhex('0E0A0F6708070E24')
 GOOD = bytes.fromhex('F136B6C318580000949440210180024B43D08E1BF06B004302020E32002200B7')
@@ -18,6 +23,90 @@ TYPE5_ROM = bytes.fromhex('1103010252CA0737')
 BL1860B = bytes.fromhex('F126BD131458000094944021D080020BC3D08E6760F3002302020E61004100E5')
 TPCELL = bytes.fromhex('F136B6C318580000949440210180020943D08E1BF0650000000000000000000000')
 HEALTHY_CELLS = [4.11, 4.114, 4.116, 4.109, 4.117]
+
+
+class AsyncLink:
+    """Gives a synchronous fake pack the interface of the real links."""
+
+    def __init__(self, link: Any) -> None:
+        """Wrap a fake pack.
+
+        :param link: Fake pack.
+        """
+        self._link = link
+
+    async def skip(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Run a skip ROM transaction.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        return self._link.skip(data=data, reply_length=reply_length)
+
+    async def rom(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Run a read ROM transaction.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        return self._link.rom(data=data, reply_length=reply_length)
+
+    async def raw(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Run a raw transaction.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        return self._link.raw(data=data, reply_length=reply_length)
+
+    async def query(self, command: int, data: bytes = b'', reply_length: int = 0) -> bytes:
+        """Send one firmware frame.
+
+        :param command: Firmware command.
+        :param data: Data bytes.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        return self._link.query(command=command, data=data, reply_length=reply_length)
+
+    @asynccontextmanager
+    async def session(self) -> AsyncIterator[None]:
+        """Hold Enable high."""
+        with self._link.session():
+            yield
+
+
+class Battery:
+    """Runs the async battery layer to completion, so that tests read like plain calls."""
+
+    def __init__(self, link: Any) -> None:
+        """Wrap a fake pack.
+
+        :param link: Fake pack.
+        """
+        self._battery = AsyncBattery(link=AsyncLink(link=link))
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        """Return a method that waits for its result.
+
+        :param name: Method name.
+        :return: Method of the battery layer.
+        """
+        method = getattr(self._battery, name)
+        if not inspect.iscoroutinefunction(method):
+            return method
+
+        return lambda **kwargs: asyncio.run(method(**kwargs))
+
+
+async def no_wait(_: float) -> None:
+    """Skip a delay.
+
+    :param _: Seconds.
+    """
 
 
 def locked_frame() -> bytes:
@@ -141,7 +230,7 @@ def fast_and_isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     :param monkeypatch: Pytest patcher.
     :param tmp_path: Temporary folder.
     """
-    monkeypatch.setattr(battery_module.time, 'sleep', lambda _: None)
+    monkeypatch.setattr(battery_module.asyncio, 'sleep', no_wait)
     monkeypatch.setattr(battery_module, 'BACKUP_DIR', tmp_path)
 
 
@@ -593,7 +682,7 @@ def test_raw_refuses_forbidden_commands_even_with_yes(mode: str, hex_bytes: list
     link = RecordingLink()
     args = Namespace(bytes=hex_bytes, mode=mode, read=0, yes=True)
     with pytest.raises(BatteryError, match='nothing was sent'):
-        cli.run_raw(link=link, args=args)  # type: ignore[arg-type]
+        asyncio.run(cli.run_raw(link=AsyncLink(link=link), args=args))
 
     assert link.sent == []
 
@@ -601,7 +690,11 @@ def test_raw_refuses_forbidden_commands_even_with_yes(mode: str, hex_bytes: list
 def test_raw_still_allows_reads() -> None:
     """Check that a normal read is sent."""
     link = RecordingLink()
-    cli.run_raw(link=link, args=Namespace(bytes=['d7', '0e', '00', '02'], mode='cc', read=3, yes=False))  # type: ignore[arg-type]
+    asyncio.run(
+        cli.run_raw(
+            link=AsyncLink(link=link), args=Namespace(bytes=['d7', '0e', '00', '02'], mode='cc', read=3, yes=False)
+        )
+    )
     assert link.sent == [bytes.fromhex('d70e0002')]
 
 
@@ -614,7 +707,7 @@ def test_raw_refuses_forbidden_commands_after_a_rom_id(command: str) -> None:
     link = RecordingLink()
     args = Namespace(bytes=['33', '11030102 52ca0737', command], mode='none', read=0, yes=True)
     with pytest.raises(BatteryError, match='nothing was sent'):
-        cli.run_raw(link=link, args=args)  # type: ignore[arg-type]
+        asyncio.run(cli.run_raw(link=AsyncLink(link=link), args=args))
 
     assert link.sent == []
 
@@ -632,7 +725,7 @@ def test_type_five_refusal_comes_before_the_confirmation(
     monkeypatch.setattr('builtins.input', lambda _: pytest.fail('the user was asked to confirm'))
     link = TypeFiveLink()
     with pytest.raises(BatteryError, match='type 5'):
-        cli.dispatch(link=link, args=Namespace(command=command, seconds=0.0, yes=False))  # type: ignore[arg-type]
+        asyncio.run(cli.dispatch(link=AsyncLink(link=link), args=Namespace(command=command, seconds=0.0, yes=False)))
 
     assert capsys.readouterr().out == ''
     assert link.log == []
@@ -729,7 +822,7 @@ def test_fixed_frame_pack_refuses_service_commands(
     link = FixedFrameLink()
     args = Namespace(command=command, seconds=0.0, yes=False, file=Path('backup.json'))
     with pytest.raises(NoRomIdError):
-        cli.dispatch(link=link, args=args)  # type: ignore[arg-type]
+        asyncio.run(cli.dispatch(link=AsyncLink(link=link), args=args))
 
     assert capsys.readouterr().out == ''
     assert link.log == []
@@ -747,7 +840,9 @@ def test_fixed_frame_pack_refuses_unlock() -> None:
 def test_fixed_frame_pack_refuses_monitor() -> None:
     """Check that the monitor stops instead of printing empty readings."""
     with pytest.raises(BatteryError, match='monitor needs live data'):
-        cli.run_monitor(battery=Battery(link=FixedFrameLink()), args=Namespace(interval=0.0))
+        asyncio.run(
+            cli.run_monitor(battery=AsyncBattery(link=AsyncLink(link=FixedFrameLink())), args=Namespace(interval=0.0))
+        )
 
 
 class StreamingLink(FixedFrameLink):
@@ -791,7 +886,7 @@ def test_streaming_pack_refuses_service_commands(
     link = StreamingLink()
     args = Namespace(command=command, seconds=0.0, yes=False, file=Path('backup.json'))
     with pytest.raises(StreamingPackError):
-        cli.dispatch(link=link, args=args)  # type: ignore[arg-type]
+        asyncio.run(cli.dispatch(link=AsyncLink(link=link), args=args))
 
     assert capsys.readouterr().out == ''
     assert link.log == []
@@ -859,3 +954,144 @@ def test_write_reports_a_pack_left_in_test_mode(tmp_path: Path) -> None:
     link.stuck_in_test_mode = True
     with pytest.raises(BatteryError, match='still in test mode'):
         Battery(link=link).restore(path=write_backup(path=tmp_path, frame=GOOD), allow_history=True)
+
+
+def web_exchange(link: FakeLink) -> Callable[[list[int], int], Any]:
+    """Answer page requests like the firmware does, from a fake pack.
+
+    :param link: Fake pack.
+    :return: Function with the signature the page supplies.
+    """
+
+    async def exchange(data: list[int], length: int) -> bytes:
+        """Decode one firmware frame and run it on the fake pack.
+
+        :param data: Frame bytes.
+        :param length: Number of bytes expected back.
+        :return: Reply with its header.
+        """
+        _, size, reply_length, command = data[:4]
+        body = bytes(data[4 : 4 + size])
+        handlers = {0xCC: link.skip, 0x03: link.raw}
+        if command in (0x01, 0x02):
+            reply = bytes([0x00, 0x03, 0x02])[:reply_length]
+        elif command == 0x33:
+            reply = link.query(command=command, data=body, reply_length=reply_length)
+        else:
+            reply = handlers[command](data=body, reply_length=reply_length)
+
+        return bytes([command, reply_length]) + reply
+
+    return exchange
+
+
+def test_web_report_is_json() -> None:
+    """Check that the page gets the same report as the command line tool."""
+    report = json.loads(asyncio.run(WebTool(web_exchange(FakeLink())).report()))
+    assert report['frame'] == GOOD.hex(' ').upper()
+    assert report['cycle_count'] == 35
+
+
+def test_web_fixed_frame_pack_is_marked() -> None:
+    """Check that a fixed frame pack reaches the page as emulated."""
+    tool = WebTool(web_exchange(FixedFrameLink()))  # type: ignore[arg-type]
+    assert json.loads(asyncio.run(tool.report()))['emulated'] is True
+
+
+def test_web_unlock_plan_carries_a_backup() -> None:
+    """Check that the plan gives the page a backup before anything is written."""
+    link = FakeLink(frame=locked_frame())
+    plan = json.loads(asyncio.run(WebTool(web_exchange(link)).plan_unlock()))
+    assert plan['backup'] == {'rom': ROM.hex(), 'frame': locked_frame().hex()}
+    assert plan['blockers'] == []
+    assert 'da04' not in steps(link=link)
+
+
+def test_web_unlock_keeps_the_refusals() -> None:
+    """Check that the page can not unlock a pack the command line tool refuses."""
+    link = FakeLink(frame=locked_frame(), cells=[1.0, 4.1, 4.1, 4.1, 4.1])
+    tool = WebTool(web_exchange(link))
+    assert json.loads(asyncio.run(tool.plan_unlock()))['blockers']
+    assert 'unlock refused' in json.loads(asyncio.run(tool.unlock()))['error']
+    assert link.written == []
+
+
+def test_web_offers_no_raw_or_restore() -> None:
+    """Check that the page has no route to arbitrary writes."""
+    public = {name for name in dir(WebTool) if not name.startswith('_')}
+    assert public == {'firmware', 'report', 'monitor', 'plan_unlock', 'unlock'}
+
+
+def test_web_unlock_runs_after_a_plan() -> None:
+    """Check that the planned unlock reaches the pack."""
+    link = FakeLink(frame=locked_frame(), after_reset=GOOD)
+    tool = WebTool(web_exchange(link))
+    asyncio.run(tool.plan_unlock())
+    result = json.loads(asyncio.run(tool.unlock()))
+    assert result['lock_causes'] == []
+    assert b'\xda\x04' in link.log
+
+
+def test_web_unlock_needs_a_plan() -> None:
+    """Check that nothing is written without a checked plan."""
+    link = FakeLink(frame=locked_frame())
+    assert 'nothing was written' in json.loads(asyncio.run(WebTool(web_exchange(link)).unlock()))['error']
+    assert b'\xda\x04' not in link.log
+
+
+def test_web_unlock_refuses_a_changed_pack() -> None:
+    """Check that a plan does not carry over to another pack or state, and is used only once."""
+    link = FakeLink(frame=locked_frame())
+    tool = WebTool(web_exchange(link))
+    asyncio.run(tool.plan_unlock())
+    link.frame = GOOD
+    assert 'nothing was written' in json.loads(asyncio.run(tool.unlock()))['error']
+    link.frame = locked_frame()
+    assert 'nothing was written' in json.loads(asyncio.run(tool.unlock()))['error']
+    assert b'\xda\x04' not in link.log
+
+
+def test_web_link_reports_a_lost_port() -> None:
+    """Check that a browser error becomes a normal error for the page."""
+
+    async def lost(data: list[int], length: int) -> bytes:
+        """Fail like an unplugged adapter.
+
+        :param data: Bytes to send.
+        :param length: Number of bytes to read.
+        :return: Nothing, it always fails.
+        """
+        raise RuntimeError('port gone')
+
+    assert 'port gone' in json.loads(asyncio.run(WebTool(lost).report()))['error']
+
+
+def test_web_report_always_identifies_a_type_two_pack() -> None:
+    """Check that a plain read uses test mode where a pack needs it."""
+    link = TypeTwoLink()
+    assert json.loads(asyncio.run(WebTool(web_exchange(link)).report()))['controller_type'] == 2
+    assert bytes.fromhex('d996a5') in link.log
+
+
+def test_web_monitor_stays_out_of_test_mode() -> None:
+    """Check that repeated reads keep the identified data, update measurements and skip test mode."""
+    link = TypeTwoLink()
+    tool = WebTool(web_exchange(link))
+    first = json.loads(asyncio.run(tool.monitor()))
+    entries = link.log.count(bytes.fromhex('d996a5'))
+    assert entries > 0
+    link.cells = [3.5] * 5
+    second = json.loads(asyncio.run(tool.monitor()))
+    assert link.log.count(bytes.fromhex('d996a5')) == entries
+    assert second['controller_type'] == 2
+    assert second['health_rating'] == first['health_rating']
+    assert second['live']['cell_voltages'] == [3.5] * 5
+
+
+def test_web_monitor_rereads_a_changed_pack() -> None:
+    """Check that a changed frame gets a full read and not the old report."""
+    link = FakeLink()
+    tool = WebTool(web_exchange(link))
+    asyncio.run(tool.report())
+    link.frame = locked_frame()
+    assert json.loads(asyncio.run(tool.monitor()))['locked'] is True

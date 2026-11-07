@@ -1,6 +1,7 @@
 """Command line interface."""
 
 import argparse
+import asyncio
 import json
 import sys
 import time
@@ -11,7 +12,8 @@ import serial
 from makita_tool import __version__
 from makita_tool.battery import Battery, BatteryError, Report, report_to_dict
 from makita_tool.frame import Frame
-from makita_tool.link import Link, LinkError
+from makita_tool.link import Link
+from makita_tool.transport import LinkError
 
 PROBE_HELP = 'identify the controller with a short visit to test mode'
 EMULATED_WARNING = 'WARNING: no ROM id and no live data. This frame is a fixed reply, not the state of this pack.'
@@ -104,37 +106,37 @@ def confirm(message: str, assume_yes: bool) -> None:
         raise BatteryError('cancelled, nothing was changed')
 
 
-def run_info(battery: Battery, args: argparse.Namespace) -> None:
+async def run_info(battery: Battery, args: argparse.Namespace) -> None:
     """Print the battery report.
 
     :param battery: Battery.
     :param args: Parsed arguments.
     """
-    report = battery.report(probe_test_mode=args.probe_test_mode)
+    report = await battery.report(probe_test_mode=args.probe_test_mode)
     if args.json:
         print(json.dumps(report_to_dict(report), indent=2))
     else:
         print_report(report)
 
 
-def run_monitor(battery: Battery, args: argparse.Namespace) -> None:
+async def run_monitor(battery: Battery, args: argparse.Namespace) -> None:
     """Print live measurements repeatedly.
 
     :param battery: Battery.
     :param args: Parsed arguments.
     """
     while True:
-        report = battery.report()
+        report = await battery.report()
         if report.emulated:
             raise BatteryError('monitor needs live data, and this pack only answers with a fixed frame')
 
         live = report.live
         cells = ' '.join(f'{voltage:.3f}' for voltage in live.cell_voltages)
         print(f'{time.strftime("%H:%M:%S")} {live.pack_voltage} V  cells {cells}  {live.temperature_c} °C', flush=True)
-        time.sleep(args.interval)
+        await asyncio.sleep(args.interval)
 
 
-def run_raw(link: Link, args: argparse.Namespace) -> None:
+async def run_raw(link: Link, args: argparse.Namespace) -> None:
     """Send a raw command.
 
     :param link: Link to the firmware.
@@ -148,16 +150,16 @@ def run_raw(link: Link, args: argparse.Namespace) -> None:
         confirm(message=f'Raw {args.mode} command {data.hex(" ")} may change the battery.', assume_yes=args.yes)
 
     handlers = {'cc': link.skip, '33': link.rom, 'none': link.raw}
-    print(handlers[args.mode](data=data, reply_length=args.read).hex(' ').upper())
+    print((await handlers[args.mode](data=data, reply_length=args.read)).hex(' ').upper())
 
 
-def run_unlock(battery: Battery, args: argparse.Namespace) -> None:
+async def run_unlock(battery: Battery, args: argparse.Namespace) -> None:
     """Clear a false lockout.
 
     :param battery: Battery.
     :param args: Parsed arguments.
     """
-    _, frame, target, clear_errors, blockers = battery.plan_unlock(probe_test_mode=args.probe_test_mode)
+    _, frame, target, clear_errors, blockers = await battery.plan_unlock(probe_test_mode=args.probe_test_mode)
     if target is None and not clear_errors:
         print(f'Nothing to do: the frame is valid and the failure code is {frame.failure_name}.')
 
@@ -177,7 +179,7 @@ def run_unlock(battery: Battery, args: argparse.Namespace) -> None:
         return
 
     confirm(message='This writes to the battery. A backup of the frame is saved first.', assume_yes=args.yes)
-    print_result(frame=battery.unlock(probe_test_mode=args.probe_test_mode))
+    print_result(frame=await battery.unlock(probe_test_mode=args.probe_test_mode))
 
 
 def print_result(frame: Frame) -> None:
@@ -237,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def dispatch(link: Link, args: argparse.Namespace) -> None:
+async def dispatch(link: Link, args: argparse.Namespace) -> None:
     """Run the selected command.
 
     :param link: Link to the firmware.
@@ -245,32 +247,32 @@ def dispatch(link: Link, args: argparse.Namespace) -> None:
     """
     battery = Battery(link=link)
     if args.command == 'info':
-        run_info(battery=battery, args=args)
+        await run_info(battery=battery, args=args)
     elif args.command == 'monitor':
-        run_monitor(battery=battery, args=args)
+        await run_monitor(battery=battery, args=args)
     elif args.command == 'raw':
-        run_raw(link=link, args=args)
+        await run_raw(link=link, args=args)
     elif args.command == 'led-test':
-        battery.check_supported(command=args.command)
+        await battery.check_supported(command=args.command)
         confirm(message='The pack enters test mode for a few seconds.', assume_yes=args.yes)
-        print(f'LED command replies: {battery.led_test(seconds=args.seconds).hex(" ").upper()}')
+        print(f'LED command replies: {(await battery.led_test(seconds=args.seconds)).hex(" ").upper()}')
     elif args.command == 'reset-errors':
-        battery.check_supported(command=args.command)
+        await battery.check_supported(command=args.command)
         confirm(message=f'This clears the error register of the battery. {HISTORY_WARNING}', assume_yes=args.yes)
-        battery.reset_errors()
-        with link.session():
-            print_result(frame=battery.read_frame()[1])
+        await battery.reset_errors()
+        async with link.session():
+            print_result(frame=(await battery.read_frame())[1])
     elif args.command == 'unlock':
-        run_unlock(battery=battery, args=args)
+        await run_unlock(battery=battery, args=args)
     elif args.command == 'restore':
-        with link.session():
-            battery.read_frame()
+        async with link.session():
+            await battery.read_frame()
 
         confirm(message=f'This writes the frame from {args.file} to the battery.', assume_yes=args.yes)
-        print_result(frame=battery.restore(path=args.file, allow_history=args.allow_history))
+        print_result(frame=await battery.restore(path=args.file, allow_history=args.allow_history))
     elif args.command == 'exit-test-mode':
-        with link.session():
-            battery.exit_test_mode()
+        async with link.session():
+            await battery.exit_test_mode()
 
 
 def main() -> int:
@@ -281,7 +283,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         with Link(port=args.port) as link:
-            dispatch(link=link, args=args)
+            asyncio.run(dispatch(link=link, args=args))
     except (BatteryError, LinkError, serial.SerialException) as error:
         print(f'Error: {error}', file=sys.stderr)
 

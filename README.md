@@ -46,6 +46,24 @@ venv/bin/makita-tool raw cc d7 0e 00 02 --read 3
 
 Close the OBI web tool first, because only one program can hold the serial port.
 
+## Web tool
+
+The same tool runs in a browser at <https://visualgadget.github.io/makita_obi/>, with nothing to install except the firmware on the board. It needs a browser with Web Serial, such as Chrome, Edge or Firefox.
+
+The page runs the Python package from this repository in [Pyodide](https://pyodide.org/), so its decoding, fake pack detection and unlock refusals are the same code as the command line tool. Nothing about the battery is uploaded.
+
+The page also installs the firmware on the board, using [ESP Web Tools](https://esphome.github.io/esp-web-tools/). Take the battery off the adapter first.
+
+It reads reports, monitors live values and unlocks. It has no raw commands and no `restore`, so it cannot write an arbitrary frame. An unlock asks you to download a frame backup and type a confirmation first, and it is refused if the pack changed after the check. To put a backup back, use `restore` from the command line tool.
+
+To run it locally:
+
+```bash
+pio run
+python3 scripts/build_web.py
+python3 -m http.server -d _site 8000 --bind 127.0.0.1
+```
+
 ## Safety
 
 - Reading sends documented read commands only. Test mode needs an explicit `--probe-test-mode`.
