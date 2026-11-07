@@ -1,0 +1,29 @@
+[project]
+name = "makita-tool"
+version = "0.1.0"
+description = "Read and service Makita LXT batteries through a D1 mini"
+requires-python = ">=3.11"
+dependencies = ["pyserial>=3.5"]
+
+[project.optional-dependencies]
+dev = ["mypy", "pytest", "ruff", "types-pyserial"]
+
+[project.scripts]
+makita-tool = "makita_tool.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["makita_tool*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+quote-style = "single"
