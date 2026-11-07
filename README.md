@@ -70,7 +70,17 @@ Close the OBI web tool first, because only one program can hold the serial port.
 
 Read commands and entering and leaving test mode are tested on a real 2014 BL1850 that reports no model and has no
 LEDs, so the LED commands ran but their effect was not seen: they replied `07`, not the usual `06`.
-`reset-errors` has been run once, on a real BL1850. `restore --allow-history` has written a frame once on the same pack: the frame read back exact and survived reinsertion, and the pack did not acknowledge the exit from test mode after the store. `unlock` is covered by simulated tests only and has not been run on a real battery. Support for controller types other than this pack is implemented
+A full lock test passed on the same BL1850:
+
+1. `restore` wrote a frame with nybble 34 set to 1 and valid checksums, and the charger refused the pack with
+   alternating red and green lights.
+2. `unlock` cleared the lock with its `DA 04` step alone, so it wrote no frame, and the pack charged normally. `DA 04`
+   left the same frame both times it ran, so it seems to write fixed reset values, including the charger lock.
+3. `restore --allow-history` put the original frame back, 35 cycles included.
+
+`restore` wrote a frame three times, and the first write survived reinsertion and charging. The pack did not
+acknowledge the exit from test mode after the first store. The branch of `unlock` that writes a repaired frame is
+covered by simulated tests only. Support for controller types other than this pack is implemented
 from public notes and is untested.
 
 ## Packs that only imitate the interface

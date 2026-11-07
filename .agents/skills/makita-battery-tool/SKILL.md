@@ -62,4 +62,4 @@ Pins are set in `platformio.ini`: `OBI_OW_PIN=13` (D7), `OBI_EN_PIN=12` (D6). Do
 
 ## Status
 
-Reads and entering and leaving test mode are tested on a real BL1850. `reset-errors` has been run once on a real BL1850, see its effect above. `restore --allow-history` has written a frame once on a real BL1850, and it survived reinsertion. `unlock` is tested in simulation only, so treat the first real write as an experiment and tell the user this before running it.
+Reads and entering and leaving test mode are tested on a real BL1850. `reset-errors` has been run once on a real BL1850, see its effect above. On a real BL1850 `restore` wrote frames three times, a frame with nybble 34 set made the charger refuse the pack, and `unlock` cleared that lock with `DA 04` alone, which also reset the cycle count. `restore --allow-history` then put the history back. The branch of `unlock` that writes a repaired frame is tested in simulation only, so treat the first real write as an experiment and tell the user this before running it.
