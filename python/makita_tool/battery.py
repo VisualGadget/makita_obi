@@ -25,6 +25,11 @@ MAX_UNLOCK_TEMPERATURE_C = 60.0
 COMMIT_WAIT_S = 2.0
 STEP_WAIT_S = 0.05
 TYPE5_ROM_LIMIT = 100
+TYPE5_READ_ATTEMPTS = 5
+TYPE5_REFUSALS = {
+    'led-test': 'led-test is not supported on type 5: a real BL1860B refused test mode',
+    'reset-errors': 'reset-errors is not available on type 5: F0513 packs have no error reset command',
+}
 BACKUP_DIR = Path.home() / '.local' / 'state' / 'makita_tool' / 'backups'
 
 HEALTH_COMMANDS = {0: bytes.fromhex('d4500102'), 2: bytes.fromhex('d6040502'), 3: bytes.fromhex('d6380202')}
@@ -248,15 +253,22 @@ class Battery:
         """Read measurements from an F0513 based pack.
 
         Sending the F0 00 clear first scrambled these replies on a real BL1860B, and it also changes
-        the state of the pack, so it is not used here.
+        the state of the pack, so it is not used here. Some variants need several reads before all
+        cells report valid data.
 
         :return: Measurements, empty when the replies are not plausible.
         """
-        cells = []
-        for command in (0x31, 0x32, 0x33, 0x34, 0x35):
-            cells.append(int.from_bytes(self._link.skip(data=bytes([command]), reply_length=2), 'little') / 1000)
+        for _ in range(TYPE5_READ_ATTEMPTS):
+            cells = []
+            for command in (0x31, 0x32, 0x33, 0x34, 0x35):
+                cells.append(int.from_bytes(self._link.skip(data=bytes([command]), reply_length=2), 'little') / 1000)
 
-        if max(cells) > MAX_CELL_V:
+            if all(0 < cell <= MAX_CELL_V for cell in cells):
+                break
+
+            time.sleep(STEP_WAIT_S)
+
+        else:
             return LiveData()
 
         temperature = int.from_bytes(self._link.skip(data=b'\x52', reply_length=2), 'little')
@@ -404,6 +416,26 @@ class Battery:
 
         return reply[ROM_LENGTH:]
 
+    @staticmethod
+    def _refuse_type5(rom: bytes, command: str) -> None:
+        """Stop a command that type 5 packs do not support.
+
+        :param rom: ROM id of the battery.
+        :param command: Key in TYPE5_REFUSALS.
+        """
+        if rom[3] < TYPE5_ROM_LIMIT:
+            raise BatteryError(TYPE5_REFUSALS[command])
+
+    def check_supported(self, command: str) -> None:
+        """Read the battery and stop if it does not support a command.
+
+        This only reads, so it can run before the user is asked to confirm.
+
+        :param command: Key in TYPE5_REFUSALS.
+        """
+        with self._link.session():
+            self._refuse_type5(rom=self.read_frame()[0], command=command)
+
     def led_test(self, seconds: float) -> bytes:
         """Light all battery LEDs for a while.
 
@@ -412,9 +444,7 @@ class Battery:
         """
         with self._link.session():
             rom = self.read_frame()[0]
-            if rom[3] < TYPE5_ROM_LIMIT:
-                raise BatteryError('led-test is not supported on type 5: a real BL1860B refused test mode')
-
+            self._refuse_type5(rom=rom, command='led-test')
             with self.test_mode():
                 replies = self._rom_step(rom=rom, data=b'\xda\x31', reply_length=1)
                 time.sleep(seconds)
@@ -430,6 +460,7 @@ class Battery:
         """
         with self._link.session():
             rom = self.read_frame()[0]
+            self._refuse_type5(rom=rom, command='reset-errors')
             with self.test_mode():
                 self._rom_step(rom=rom, data=b'\xda\x04', reply_length=1)
 

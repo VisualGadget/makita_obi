@@ -17,6 +17,21 @@ PROBE_HELP = 'identify the controller with a short visit to test mode'
 READ_ONLY_PREFIXES = (b'\xaa\x00', b'\xd4', b'\xd6', b'\xd7', b'\xdc\x0b', b'\xdc\x0c')
 
 
+def is_forbidden(mode: str, data: bytes) -> bool:
+    """Check for commands that must never be sent by hand.
+
+    On F0513 packs 99 opens a command tree that includes a fuse trigger and a massive reset, and
+    10 21 overwrites the ROM id.
+
+    :param mode: ROM command mode.
+    :param data: Bytes to send.
+    :return: True when the command is forbidden.
+    """
+    offsets = {b'\xcc': (1,), b'\x33': (1, 9)}.get(data[:1], (0,)) if mode == 'none' else (0,)
+
+    return any(data[offset : offset + 1] == b'\x99' or data[offset : offset + 2] == b'\x10\x21' for offset in offsets)
+
+
 def print_report(report: Report) -> None:
     """Print a report for people.
 
@@ -117,6 +132,9 @@ def run_raw(link: Link, args: argparse.Namespace) -> None:
     :param args: Parsed arguments.
     """
     data = bytes.fromhex(''.join(args.bytes))
+    if is_forbidden(mode=args.mode, data=data):
+        raise BatteryError(f'refused: {data.hex(" ")} can damage F0513 packs, nothing was sent')
+
     if args.mode != 'cc' or not data.startswith(READ_ONLY_PREFIXES):
         confirm(message=f'Raw {args.mode} command {data.hex(" ")} may change the battery.', assume_yes=args.yes)
 
@@ -221,9 +239,11 @@ def dispatch(link: Link, args: argparse.Namespace) -> None:
     elif args.command == 'raw':
         run_raw(link=link, args=args)
     elif args.command == 'led-test':
+        battery.check_supported(command=args.command)
         confirm(message='The pack enters test mode for a few seconds.', assume_yes=args.yes)
         print(f'LED command replies: {battery.led_test(seconds=args.seconds).hex(" ").upper()}')
     elif args.command == 'reset-errors':
+        battery.check_supported(command=args.command)
         confirm(message='This clears the error register of the battery.', assume_yes=args.yes)
         battery.reset_errors()
         with link.session():

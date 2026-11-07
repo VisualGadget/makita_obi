@@ -23,14 +23,14 @@ venv/bin/makita-tool unlock --dry-run
 venv/bin/makita-tool raw cc d7 0e 00 02 --read 3
 ```
 
-`raw` only skips its confirmation for known read commands.
+`raw` only skips its confirmation for known read commands. It refuses `99` and `10 21` outright: on F0513 packs `99` opens a command tree with a fuse trigger (`94`, "will release smoke"), a massive reset (`11`) and ROM id writes, and `10 21` overwrites the ROM id. Do not work around this with scripts, and do not send undocumented commands to a battery.
 
 ## Commands that change the battery
 
 Get the user's explicit approval for each run. Do not pass `--yes` unless the user approved that exact operation.
 
 - `unlock`: clears a false lockout and backs up the frame first. It tries the error reset, and writes the frame only if the pack is still locked.
-- `reset-errors`: clears the error register.
+- `reset-errors`: clears the error register. Refused on type 5 packs, which are read only: sources report no LED control, no error reset, and frame writes that do nothing.
 - `led-test`, `--probe-test-mode`: enter test mode briefly. `led-test` is not supported on type 5: a real BL1860B refused `d9 96 a5` in both `cc` and `33` forms, and `cc 99` followed by `33 da 31` lit nothing.
 - `restore FILE`: undoes an unlock on the same pack. It refuses a backup that differs outside the lock fields, so old backups stop working once the cycle count changes. Backups are in `~/.local/state/makita_tool/backups`.
 - `exit-test-mode`: leaves test mode. On a real BL1850, Enable low for 2 s ended test mode too, and removing the pack should do the same.

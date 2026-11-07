@@ -59,6 +59,9 @@ Close the OBI web tool first, because only one program can hold the serial port.
   insertion, so reinsert it before retrying.
 - Public notes say a pack in test mode cannot power tools or charge. The tool always leaves test mode, and on the
   tested BL1850 holding Enable low for 2 s also ended it.
+- F0513 (type 5) packs are read only. They have no LED test, error reset or working frame write.
+- `raw` refuses `99` and `10 21`, even with `--yes`. On F0513 packs `99` opens a command tree that includes a fuse
+  trigger and a massive reset, and `10 21` overwrites the ROM id. Do not send other unknown commands to a battery.
 - Lithium-ion packs can be dangerous. A lockout is often real protection, so do not charge a pack you do not trust.
 
 ## Status

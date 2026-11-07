@@ -1,11 +1,13 @@
 """Tests for frame decoding and battery operations, using a frame read from a real BL1850 pack."""
 
 import json
+from argparse import Namespace
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from makita_tool import __main__ as cli
 from makita_tool import battery as battery_module
 from makita_tool.battery import Battery, BatteryError, LiveData, kelvin_tenths_to_c
 from makita_tool.frame import Frame, manufacture_date, set_nybble
@@ -493,4 +495,139 @@ def test_type_five_led_test_is_refused() -> None:
     with pytest.raises(BatteryError, match='not supported on type 5'):
         Battery(link=link).led_test(seconds=0.0)
 
+    assert link.log == []
+
+
+class FlakyTypeFiveLink(TypeFiveLink):
+    """Gives blank cell replies for the first reads, like some real F0513 variants."""
+
+    def __init__(self, bad_reads: int) -> None:
+        """Set the number of blank reads.
+
+        :param bad_reads: Number of blank cell 1 replies.
+        """
+        super().__init__()
+        self.bad_reads = bad_reads
+
+    def skip(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Answer a skip ROM transaction.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Reply bytes.
+        """
+        if data == b'\x31' and self.bad_reads:
+            self.bad_reads -= 1
+
+            return b'\xff\xff'
+
+        return super().skip(data=data, reply_length=reply_length)
+
+
+def test_type_five_read_retries_until_valid() -> None:
+    """Check that a blank read is retried."""
+    report = Battery(link=FlakyTypeFiveLink(bad_reads=2)).report()
+    assert report.live.cell_voltages == [4.139, 4.137, 4.136, 4.137, 4.137]
+
+
+def test_type_five_read_gives_up() -> None:
+    """Check that a pack that never answers gives no measurements."""
+    report = Battery(link=FlakyTypeFiveLink(bad_reads=100)).report()
+    assert report.live.cell_voltages == []
+
+
+def test_type_five_reset_errors_is_refused() -> None:
+    """Check that no command is sent to a type 5 pack beyond the frame read."""
+    link = TypeFiveLink()
+    with pytest.raises(BatteryError, match='not available on type 5'):
+        Battery(link=link).reset_errors()
+
+    assert link.log == []
+
+
+class RecordingLink:
+    """Fails the test if a raw command reaches the bus."""
+
+    def __init__(self) -> None:
+        """Start with an empty log."""
+        self.sent: list[bytes] = []
+
+    def record(self, data: bytes, reply_length: int = 0) -> bytes:
+        """Record a command.
+
+        :param data: Bytes written.
+        :param reply_length: Number of reply bytes.
+        :return: Blank reply.
+        """
+        self.sent.append(data)
+
+        return b'\xff' * reply_length
+
+    skip = record
+    rom = record
+    raw = record
+
+
+@pytest.mark.parametrize(
+    ('mode', 'hex_bytes'),
+    [
+        ('cc', ['99']),
+        ('33', ['99']),
+        ('none', ['99']),
+        ('none', ['cc', '99']),
+        ('cc', ['10', '21']),
+        ('none', ['cc1021']),
+    ],
+)
+def test_raw_refuses_forbidden_commands_even_with_yes(mode: str, hex_bytes: list[str]) -> None:
+    """Check that dangerous commands never reach the bus.
+
+    :param mode: ROM command mode.
+    :param hex_bytes: Command bytes.
+    """
+    link = RecordingLink()
+    args = Namespace(bytes=hex_bytes, mode=mode, read=0, yes=True)
+    with pytest.raises(BatteryError, match='nothing was sent'):
+        cli.run_raw(link=link, args=args)  # type: ignore[arg-type]
+
+    assert link.sent == []
+
+
+def test_raw_still_allows_reads() -> None:
+    """Check that a normal read is sent."""
+    link = RecordingLink()
+    cli.run_raw(link=link, args=Namespace(bytes=['d7', '0e', '00', '02'], mode='cc', read=3, yes=False))  # type: ignore[arg-type]
+    assert link.sent == [bytes.fromhex('d70e0002')]
+
+
+@pytest.mark.parametrize('command', ['99', '1021'])
+def test_raw_refuses_forbidden_commands_after_a_rom_id(command: str) -> None:
+    """Check that a hand written ROM id does not hide a dangerous command.
+
+    :param command: Command bytes after the ROM id.
+    """
+    link = RecordingLink()
+    args = Namespace(bytes=['33', '11030102 52ca0737', command], mode='none', read=0, yes=True)
+    with pytest.raises(BatteryError, match='nothing was sent'):
+        cli.run_raw(link=link, args=args)  # type: ignore[arg-type]
+
+    assert link.sent == []
+
+
+@pytest.mark.parametrize('command', ['led-test', 'reset-errors'])
+def test_type_five_refusal_comes_before_the_confirmation(
+    command: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that a refused command neither warns nor asks the user.
+
+    :param command: Command name.
+    :param capsys: Output capture.
+    :param monkeypatch: Patch helper.
+    """
+    monkeypatch.setattr('builtins.input', lambda _: pytest.fail('the user was asked to confirm'))
+    link = TypeFiveLink()
+    with pytest.raises(BatteryError, match='type 5'):
+        cli.dispatch(link=link, args=Namespace(command=command, seconds=0.0, yes=False))  # type: ignore[arg-type]
+
+    assert capsys.readouterr().out == ''
     assert link.log == []
