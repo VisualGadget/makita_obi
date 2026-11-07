@@ -12,6 +12,8 @@ from makita_tool.frame import Frame, manufacture_date, set_nybble
 
 ROM = bytes.fromhex('0E0A0F6708070E24')
 GOOD = bytes.fromhex('F136B6C318580000949440210180024B43D08E1BF06B004302020E32002200B7')
+TYPE5_ROM = bytes.fromhex('1103010252CA0737')
+BL1860B = bytes.fromhex('F126BD131458000094944021D080020BC3D08E6760F3002302020E61004100E5')
 HEALTHY_CELLS = [4.11, 4.114, 4.116, 4.109, 4.117]
 
 
@@ -432,7 +434,10 @@ class TypeFiveLink(FakeLink):
         :param reply_length: Number of reply bytes.
         :return: Reply bytes.
         """
-        return bytes.fromhex('1103010252CA0737') + self.frame
+        if data != b'\xaa\x00':
+            self.log.append(data)
+
+        return TYPE5_ROM + self.frame
 
     def skip(self, data: bytes, reply_length: int = 0) -> bytes:
         """Answer a skip ROM transaction.
@@ -470,3 +475,22 @@ def test_type_five_rejects_implausible_cells() -> None:
     link = TypeFiveLink()
     link.scrambled = True
     assert Battery(link=link).report().live.cell_voltages == []
+
+
+def test_type_five_health_comes_from_the_frame() -> None:
+    """Check the rating of a real BL1860B: 4 - (22 + 22 * 6 / 32) / 600."""
+    link = TypeFiveLink()
+    link.frame = BL1860B
+    report = Battery(link=link).report()
+    assert report.health_rating == 3.96
+    assert report.overdischarge_percent == 0
+    assert report.overload_percent == 0
+
+
+def test_type_five_led_test_is_refused() -> None:
+    """Check that the LED test stops before sending anything to a type 5 pack."""
+    link = TypeFiveLink()
+    with pytest.raises(BatteryError, match='not supported on type 5'):
+        Battery(link=link).led_test(seconds=0.0)
+
+    assert link.log == []

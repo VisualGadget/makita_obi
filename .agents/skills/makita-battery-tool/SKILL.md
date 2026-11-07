@@ -31,7 +31,7 @@ Get the user's explicit approval for each run. Do not pass `--yes` unless the us
 
 - `unlock`: clears a false lockout and backs up the frame first. It tries the error reset, and writes the frame only if the pack is still locked.
 - `reset-errors`: clears the error register.
-- `led-test`, `--probe-test-mode`: enter test mode briefly.
+- `led-test`, `--probe-test-mode`: enter test mode briefly. `led-test` is not supported on type 5: a real BL1860B refused `d9 96 a5` in both `cc` and `33` forms, and `cc 99` followed by `33 da 31` lit nothing.
 - `restore FILE`: undoes an unlock on the same pack. It refuses a backup that differs outside the lock fields, so old backups stop working once the cycle count changes. Backups are in `~/.local/state/makita_tool/backups`.
 - `exit-test-mode`: leaves test mode. On a real BL1850, Enable low for 2 s ended test mode too, and removing the pack should do the same.
 

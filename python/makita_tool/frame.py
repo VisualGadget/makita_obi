@@ -136,6 +136,26 @@ class Frame:
         return ((nybbles[0] & 1) << 12) | (nybbles[1] << 8) | (nybbles[2] << 4) | nybbles[3]
 
     @property
+    def overdischarge_percent(self) -> int:
+        """Return the overdischarge percentage used for type 5 and 6 packs."""
+        return max(160 - 5 * self.overdischarge, 0)
+
+    @property
+    def overload_percent(self) -> int:
+        """Return the overload percentage used for type 5 and 6 packs."""
+        return max(5 * self.overload - 160, 0)
+
+    @property
+    def calculated_health(self) -> float:
+        """Return the 0 to 4 health rating calculated from the frame, for type 5 and 6 packs."""
+        overload = max(self.overload - 29, 0)
+        overdischarge = max(35 - self.overdischarge, 0)
+        damage = self.cycle_count + self.cycle_count * (overload + overdischarge) / 32
+        scale = 1000 if self.capacity in (26, 28, 40, 50) else 600
+
+        return round(max(4 - damage / scale, 0.0), 2)
+
+    @property
     def cell_count(self) -> int:
         """Return the number of cells implied by the type value."""
         if self.is_ten_cell:

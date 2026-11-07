@@ -24,6 +24,7 @@ MAX_UNLOCK_IMBALANCE_V = 0.3
 MAX_UNLOCK_TEMPERATURE_C = 60.0
 COMMIT_WAIT_S = 2.0
 STEP_WAIT_S = 0.05
+TYPE5_ROM_LIMIT = 100
 BACKUP_DIR = Path.home() / '.local' / 'state' / 'makita_tool' / 'backups'
 
 HEALTH_COMMANDS = {0: bytes.fromhex('d4500102'), 2: bytes.fromhex('d6040502'), 3: bytes.fromhex('d6380202')}
@@ -114,6 +115,8 @@ class Report:
     overdischarge_events: int | None = None
     overload_events: int | None = None
     charge_level_raw: int | None = None
+    overdischarge_percent: int | None = None
+    overload_percent: int | None = None
 
 
 def kelvin_tenths_to_c(raw: int) -> float:
@@ -189,7 +192,7 @@ class Battery:
         :param probe_test_mode: Allow a short visit to test mode.
         :return: Controller type, or None when it is unknown.
         """
-        if rom[3] < 100:
+        if rom[3] < TYPE5_ROM_LIMIT:
             return 5
 
         if frame.is_ten_cell:
@@ -321,6 +324,11 @@ class Battery:
         :param frame: Basic information frame.
         :param controller_type: Controller type.
         """
+        if controller_type in (5, 6):
+            report.health_rating = frame.calculated_health
+            report.overdischarge_percent = frame.overdischarge_percent
+            report.overload_percent = frame.overload_percent
+
         if controller_type in (0, None):
             charge = self._acked(command=bytes.fromhex('d7190004'), reply_length=5)
             report.charge_level_raw = None if charge is None else int.from_bytes(charge, 'little')
@@ -404,6 +412,9 @@ class Battery:
         """
         with self._link.session():
             rom = self.read_frame()[0]
+            if rom[3] < TYPE5_ROM_LIMIT:
+                raise BatteryError('led-test is not supported on type 5: a real BL1860B refused test mode')
+
             with self.test_mode():
                 replies = self._rom_step(rom=rom, data=b'\xda\x31', reply_length=1)
                 time.sleep(seconds)

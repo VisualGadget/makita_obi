@@ -53,6 +53,12 @@ def print_report(report: Report) -> None:
     if report.health_rating is not None:
         rows.append(('Health', f'{report.health_rating} of 4'))
 
+    if report.overdischarge_percent is not None:
+        rows.append(('Overdischarge', f'{report.overdischarge_percent} %'))
+
+    if report.overload_percent is not None:
+        rows.append(('Overload', f'{report.overload_percent} %'))
+
     if report.overdischarge_events is not None:
         rows.append(('Overdischarge events', report.overdischarge_events))
 
